@@ -91,13 +91,16 @@ jobs:
   linux-arm64:
     needs: version
     runs-on: ubuntu-24.04-arm
+    # New: a failure here ships the release without the arm64 app (the
+    # aarch64 command line comes from the linux job either way).
+    continue-on-error: true
     container: registry.fedoraproject.org/fedora:latest
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
       - name: System packages
         run: |
-          dnf install -y --setopt=install_weak_deps=False git pkgconf-pkg-config gtk4-devel wayland-devel wayland-protocols-devel libxkbcommon-devel squashfs-tools file which tar gzip xz
+          dnf install -y --setopt=install_weak_deps=False git pkgconf-pkg-config gtk4-devel wayland-devel wayland-protocols-devel libxkbcommon-devel squashfs-tools file which tar gzip xz desktop-file-utils glibc-common
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz" | tar xz -C /usr/local/bin nfpm
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -113,6 +116,14 @@ jobs:
       - name: App (AppImage, deb, rpm)
         run: |
           mkdir -p dist
+          # Zig reads the native glibc version from the libc.so.6 next to
+          # the dynamic loader (/lib here), but Fedora keeps it in /lib64:
+          # without it Zig assumes an old glibc and GTK's libraries (which
+          # need 2.34+ symbols) don't link. Point it at the real one.
+          ldd --version | head -n1
+          for d in /lib /usr/lib; do
+            [ -e "$d/libc.so.6" ] || ln -s /usr/lib64/libc.so.6 "$d/libc.so.6"
+          done
           zig build package -Doptimize=ReleaseSafe
           cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm dist/
           ls -l dist
@@ -271,7 +282,12 @@ jobs:
           }
           app=com.foreachdeveloper.locket
           sign "locket-app-$V-x86_64.AppImage" $app x86_64-linux appimage
-          sign "locket-app-$V-aarch64.AppImage" $app aarch64-linux appimage
+          # Optional: the linux-arm64 job may not have produced it.
+          if [ -f "dist/locket-app-$V-aarch64.AppImage" ]; then
+            sign "locket-app-$V-aarch64.AppImage" $app aarch64-linux appimage
+          else
+            echo "::warning::no aarch64 AppImage: released without the arm64 app"
+          fi
           sign "locket-app-$V-macos-arm64.app.tar.gz" $app aarch64-macos app.tar.gz
           sign "locket-app-$V-x86_64-windows.exe" $app x86_64-windows raw
           cli=com.foreachdeveloper.locket.cli

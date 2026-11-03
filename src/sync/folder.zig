@@ -10,6 +10,7 @@
 //! @atlas layer: sync
 
 const std = @import("std");
+const builtin = @import("builtin");
 const connector_mod = @import("connector.zig");
 const Connector = connector_mod.Connector;
 const Object = connector_mod.Object;
@@ -94,7 +95,15 @@ pub const Folder = struct {
         try checkFileName(name);
         var dir = try f.openArea(io, false, false);
         defer dir.close(io);
-        var file = dir.openFile(io, name, .{ .follow_symlinks = false, .allow_directory = false }) catch |e| switch (e) {
+        // Windows opens a file it doesn't follow links for in asynchronous
+        // mode, which plain reads can't use: there, a link is refused by
+        // looking first (making one there takes administrator rights).
+        const windows = builtin.os.tag == .windows;
+        if (windows) {
+            const st = try dir.statFile(io, name, .{ .follow_symlinks = false });
+            if (st.kind == .sym_link) return error.FolderFileIsLink;
+        }
+        var file = dir.openFile(io, name, .{ .follow_symlinks = windows, .allow_directory = false }) catch |e| switch (e) {
             error.SymLinkLoop => return error.FolderFileIsLink,
             else => return e,
         };
