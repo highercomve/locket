@@ -109,6 +109,7 @@ fn describe(err: anyerror) []const u8 {
     return vault.describeError(err) orelse sync.describe(err) orelse switch (err) {
         error.PassphrasesDiffer => "the two passphrases differ",
         error.PassphraseTooLong => "the passphrase is too long",
+        error.EchoOff => "this terminal can't hide what is typed: pipe the passphrase on stdin instead",
         else => @errorName(err),
     };
 }
@@ -251,8 +252,9 @@ fn ls(v: *vault.Vault, text: []const u8) !u8 {
 
 fn setSecret(v: *vault.Vault, arena: std.mem.Allocator, text: []const u8) !u8 {
     const r = try Ref.variableOf(text);
-    const value = trimNewline(try readStdinAll(arena));
-    defer std.crypto.secureZero(u8, @constCast(value));
+    const raw = try readStdinAll(arena);
+    defer std.crypto.secureZero(u8, raw);
+    const value = trimNewline(raw);
     try v.setSecret(r.project, r.workspace, r.name.?, value);
     try v.save();
     var o: Out = .{};
@@ -426,6 +428,9 @@ fn inject(
     var injected: usize = 0;
     for (w.secrets.keys(), w.secrets.values()) |name, secret| {
         if (allowed.count() > 0 and !allowed.contains(name)) continue;
+        // Stored names were checked when set, but a synced vault comes
+        // from every machine holding the key: check again before use.
+        if (!prefix) try vault.checkVarName(name);
         try environ.put(if (prefix) try envName(arena, name) else name, secret.value);
         injected += 1;
     }
@@ -463,6 +468,7 @@ fn envName(arena: std.mem.Allocator, secret_name: []const u8) ![]u8 {
 
 fn readStdinAll(gpa: std.mem.Allocator) ![]u8 {
     var buf: [4096]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf);
     var stdin = std.Io.File.stdin().readerStreaming(io, &buf);
     return stdin.interface.allocRemaining(gpa, .limited(stdin_limit));
 }
@@ -527,6 +533,14 @@ test inject {
     try testing.expectEqual(@as(usize, 1), try inject(a, &env2, &w, "db.url", true));
     try testing.expectEqualStrings("d", env2.get("LOCKET_DB_URL").?);
     try testing.expectError(error.NotFound, inject(a, &env2, &w, "MISSING", false));
+    // A loader variable that arrived through a synced vault: refused bare,
+    // harmless under the prefix.
+    try w.secrets.put(a, "LD_PRELOAD", .{ .value = "/tmp/x.so" });
+    var env3: std.process.Environ.Map = .init(a);
+    try testing.expectError(error.ReservedVarName, inject(a, &env3, &w, "", false));
+    var env4: std.process.Environ.Map = .init(a);
+    _ = try inject(a, &env4, &w, "LD_PRELOAD", true);
+    try testing.expectEqualStrings("/tmp/x.so", env4.get("LOCKET_LD_PRELOAD").?);
 }
 
 test trimNewline {

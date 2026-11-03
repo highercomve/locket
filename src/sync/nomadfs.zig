@@ -33,7 +33,7 @@ pub const id = "nomadfs";
 const area = "locket";
 const api_file = "api.json";
 /// A response's size bound: the node's 8 MiB file limit and headers.
-const max_response = 8 * 1024 * 1024 + 64 * 1024;
+const max_response = connector_mod.max_object + 64 * 1024;
 const timeout_ms = 60_000;
 
 /// NomadFS's default device folder: `~/.nomadfs`.

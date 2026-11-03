@@ -19,6 +19,11 @@
 
 const std = @import("std");
 
+/// The largest file a connector reads or writes: a vault of thousands of
+/// secrets is well under a MiB; this bounds what a hostile share or node
+/// can make Locket allocate. (NomadFS's API has the same limit.)
+pub const max_object: usize = 8 << 20;
+
 /// A file and, when the backend has one, its version.
 pub const Object = struct {
     data: []u8,

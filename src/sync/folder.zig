@@ -52,16 +52,23 @@ pub const Folder = struct {
         if (st.kind != .directory) return error.FolderMissing;
     }
 
-    fn areaPath(f: *Folder, gpa: std.mem.Allocator, name: ?[]const u8) ![]u8 {
-        return if (name) |n| std.fs.path.join(gpa, &.{ f.root, area, n }) else std.fs.path.join(gpa, &.{ f.root, area });
+    /// Locket's area, opened without following a symlink there: a link
+    /// planted in the shared folder can't send reads or writes elsewhere.
+    /// error.FileNotFound when it doesn't exist and `create` is false.
+    fn openArea(f: *Folder, io: std.Io, create: bool, iterate: bool) !std.Io.Dir {
+        var root = try std.Io.Dir.cwd().openDir(io, f.root, .{});
+        defer root.close(io);
+        if (create) root.createDirPath(io, area) catch |e| return if (e == error.NotDir) error.FolderAreaNotDirectory else e;
+        return root.openDir(io, area, .{ .follow_symlinks = false, .iterate = iterate }) catch |e| switch (e) {
+            error.SymLinkLoop, error.NotDir => error.FolderAreaNotDirectory,
+            else => e,
+        };
     }
 
     fn list(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator) anyerror![]const []const u8 {
         const f = self(ptr);
         try check(ptr, io, gpa);
-        const path = try f.areaPath(gpa, null);
-        defer gpa.free(path);
-        var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |e| switch (e) {
+        var dir = f.openArea(io, false, true) catch |e| switch (e) {
             error.FileNotFound => return &.{},
             else => return e,
         };
@@ -75,7 +82,7 @@ pub const Folder = struct {
         var seen: usize = 0;
         while (try it.next(io)) |entry| : (seen += 1) {
             if (seen >= 1024) break; // Locket's area holds a few files
-            if (entry.kind != .file or entry.name[0] == '.') continue; // temp files are hidden
+            if (entry.kind != .file or entry.name[0] == '.') continue; // temp files are hidden; links aren't files
             try names.append(gpa, try gpa.dupe(u8, entry.name));
         }
         return names.toOwnedSlice(gpa);
@@ -84,9 +91,25 @@ pub const Folder = struct {
     fn read(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8) anyerror!Object {
         const f = self(ptr);
         try check(ptr, io, gpa);
-        const path = try f.areaPath(gpa, name);
-        defer gpa.free(path);
-        return .{ .data = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 20)) };
+        try checkFileName(name);
+        var dir = try f.openArea(io, false, false);
+        defer dir.close(io);
+        var file = dir.openFile(io, name, .{ .follow_symlinks = false, .allow_directory = false }) catch |e| switch (e) {
+            error.SymLinkLoop => return error.FolderFileIsLink,
+            else => return e,
+        };
+        defer file.close(io);
+        var reader = file.reader(io, &.{});
+        const data = reader.interface.allocRemaining(gpa, .limited(connector_mod.max_object + 1)) catch |e| switch (e) {
+            error.ReadFailed => return reader.err.?,
+            error.StreamTooLong => return error.ObjectTooLarge,
+            error.OutOfMemory => return e,
+        };
+        if (data.len > connector_mod.max_object) {
+            gpa.free(data);
+            return error.ObjectTooLarge;
+        }
+        return .{ .data = data };
     }
 
     /// A hidden temp file in the same folder, renamed over the target: the
@@ -96,42 +119,48 @@ pub const Folder = struct {
     fn write(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8, data: []const u8, expect: Expect) anyerror!void {
         const f = self(ptr);
         try check(ptr, io, gpa);
-        const cwd = std.Io.Dir.cwd();
-        const dir = try f.areaPath(gpa, null);
-        defer gpa.free(dir);
-        try cwd.createDirPath(io, dir);
+        try checkFileName(name);
+        if (data.len > connector_mod.max_object) return error.ObjectTooLarge;
+        var dir = try f.openArea(io, true, false);
+        defer dir.close(io);
         if (expect == .absent) {
-            const existing = try f.areaPath(gpa, name);
-            defer gpa.free(existing);
-            if (cwd.statFile(io, existing, .{})) |_| return error.Changed else |_| {}
+            if (dir.statFile(io, name, .{ .follow_symlinks = false })) |_| return error.Changed else |_| {}
         }
         var rnd: u32 = 0;
         io.random(std.mem.asBytes(&rnd));
-        const tmp_name = try std.fmt.allocPrint(gpa, ".{s}.{x}.tmp", .{ name, rnd });
-        defer gpa.free(tmp_name);
-        const tmp = try std.fs.path.join(gpa, &.{ dir, tmp_name });
-        defer gpa.free(tmp);
-        const dest = try std.fs.path.join(gpa, &.{ dir, name });
-        defer gpa.free(dest);
+        var tmp_buf: [std.fs.max_name_bytes]u8 = undefined;
+        const tmp = try std.fmt.bufPrint(&tmp_buf, ".{s}.{x}.tmp", .{ name, rnd });
         {
-            const file = try cwd.createFile(io, tmp, .{});
+            const file = try dir.createFile(io, tmp, .{ .exclusive = true });
+            errdefer dir.deleteFile(io, tmp) catch {};
             defer file.close(io);
             try file.writeStreamingAll(io, data);
             try file.sync(io);
         }
-        errdefer cwd.deleteFile(io, tmp) catch {};
-        try cwd.rename(tmp, cwd, dest, io);
+        errdefer dir.deleteFile(io, tmp) catch {};
+        // A rename replaces a link itself, never what it points to.
+        try dir.rename(tmp, dir, name, io);
     }
 
     fn remove(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8, _: Expect) anyerror!void {
         const f = self(ptr);
         try check(ptr, io, gpa);
-        const path = try f.areaPath(gpa, name);
-        defer gpa.free(path);
-        std.Io.Dir.cwd().deleteFile(io, path) catch |e| switch (e) {
+        try checkFileName(name);
+        var dir = f.openArea(io, false, false) catch |e| switch (e) {
+            error.FileNotFound => return,
+            else => return e,
+        };
+        defer dir.close(io);
+        dir.deleteFile(io, name) catch |e| switch (e) {
             error.FileNotFound => {},
             else => return e,
         };
+    }
+
+    /// A file directly in the area: no separators, not `.` or `..`.
+    fn checkFileName(name: []const u8) !void {
+        if (name.len == 0 or name.len > 200 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.BadFileName;
+        for (name) |c| if (c == '/' or c == '\\' or c == 0) return error.BadFileName;
     }
 
     fn versioned(_: *anyopaque) bool {
@@ -177,4 +206,38 @@ test "a folder connector writes, lists, reads and removes, and refuses a missing
     try t.expectError(error.FolderMissing, missing.connector().write(io, a, "x", "y", .any));
     var relative: Folder = .{ .root = "relative/path" };
     try t.expectError(error.FolderNotAbsolute, relative.connector().check(io, a));
+    try t.expectError(error.BadFileName, c.read(io, a, "../config.json"));
+    try t.expectError(error.ObjectTooLarge, c.write(io, a, "big", try a.alloc(u8, connector_mod.max_object + 1), .any));
+}
+
+test "a folder connector refuses links planted in the shared folder" {
+    const t = std.testing;
+    const io = t.io;
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const base = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), a);
+    try tmp.dir.createDirPath(io, "shared");
+    try tmp.dir.createDirPath(io, "elsewhere");
+    try tmp.dir.writeFile(io, .{ .sub_path = "elsewhere/secret", .data = "private" });
+
+    // The area itself a link.
+    try tmp.dir.symLink(io, try std.fs.path.join(a, &.{ base, "elsewhere" }), "shared/locket", .{ .is_directory = true });
+    var f: Folder = .{ .root = try std.fs.path.join(a, &.{ base, "shared" }) };
+    try t.expectError(error.FolderAreaNotDirectory, f.connector().read(io, a, "secret"));
+    try t.expectError(error.FolderAreaNotDirectory, f.connector().write(io, a, "vault.enc", "x", .any));
+    try tmp.dir.deleteFile(io, "shared/locket");
+
+    // A file in the area a link.
+    try tmp.dir.createDirPath(io, "shared/locket");
+    try tmp.dir.symLink(io, try std.fs.path.join(a, &.{ base, "elsewhere", "secret" }), "shared/locket/vault.enc", .{});
+    try t.expectError(error.FolderFileIsLink, f.connector().read(io, a, "vault.enc"));
+    try t.expectEqual(@as(usize, 0), (try f.connector().list(io, a)).len);
+    // Writing replaces the link, and leaves its target alone.
+    try f.connector().write(io, a, "vault.enc", "new", .any);
+    try t.expectEqualStrings("new", (try f.connector().read(io, a, "vault.enc")).data);
+    try t.expectEqualStrings("private", try tmp.dir.readFileAlloc(io, "elsewhere/secret", a, .limited(64)));
 }

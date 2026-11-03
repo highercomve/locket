@@ -88,6 +88,7 @@ fn readPassphrase(io: std.Io, arena: std.mem.Allocator, confirm: bool) ![]u8 {
     const stdin = std.Io.File.stdin();
     if (!(stdin.isTty(io) catch false)) return readLine(io, arena, stdin);
     const first = try prompt(io, arena, if (confirm) "New passphrase for the shared vault: " else "Passphrase of the shared vault: ");
+    errdefer std.crypto.secureZero(u8, first);
     if (confirm) {
         const again = try prompt(io, arena, "Again: ");
         defer std.crypto.secureZero(u8, again);
@@ -96,41 +97,58 @@ fn readPassphrase(io: std.Io, arena: std.mem.Allocator, confirm: bool) ![]u8 {
     return first;
 }
 
+/// Turns the terminal's echo off while a passphrase is typed, and back on.
+/// A terminal whose echo can't be turned off gets no passphrase typed into
+/// it (error.EchoOff): pipe it on stdin instead.
+const Echo = struct {
+    saved: Saved,
+
+    const Saved = if (builtin.os.tag == .windows) u32 else std.posix.termios;
+    const enable_echo_input: u32 = 0x0004;
+    extern "kernel32" fn GetConsoleMode(console: std.os.windows.HANDLE, mode: *u32) callconv(.winapi) std.os.windows.BOOL;
+    extern "kernel32" fn SetConsoleMode(console: std.os.windows.HANDLE, mode: u32) callconv(.winapi) std.os.windows.BOOL;
+
+    fn off() !Echo {
+        const handle = std.Io.File.stdin().handle;
+        if (comptime builtin.os.tag == .windows) {
+            var mode: u32 = 0;
+            if (GetConsoleMode(handle, &mode) == .FALSE) return error.EchoOff;
+            if (SetConsoleMode(handle, mode & ~enable_echo_input) == .FALSE) return error.EchoOff;
+            return .{ .saved = mode };
+        }
+        const t = std.posix.tcgetattr(handle) catch return error.EchoOff;
+        var quiet = t;
+        quiet.lflag.ECHO = false;
+        std.posix.tcsetattr(handle, .FLUSH, quiet) catch return error.EchoOff;
+        return .{ .saved = t };
+    }
+
+    fn on(e: Echo) void {
+        const handle = std.Io.File.stdin().handle;
+        if (comptime builtin.os.tag == .windows) {
+            _ = SetConsoleMode(handle, e.saved);
+        } else {
+            std.posix.tcsetattr(handle, .FLUSH, e.saved) catch {};
+        }
+    }
+};
+
 fn prompt(io: std.Io, arena: std.mem.Allocator, text: []const u8) ![]u8 {
-    const stdin = std.Io.File.stdin();
-    warn(io, "{s}", .{text});
-    const Echo = struct {
-        saved: ?std.posix.termios = null,
-        fn off() @This() {
-            if (comptime builtin.os.tag == .windows) return .{};
-            const t = std.posix.tcgetattr(std.Io.File.stdin().handle) catch return .{};
-            var quiet = t;
-            quiet.lflag.ECHO = false;
-            std.posix.tcsetattr(std.Io.File.stdin().handle, .FLUSH, quiet) catch return .{};
-            return .{ .saved = t };
-        }
-        fn on(e: @This()) void {
-            if (comptime builtin.os.tag == .windows) return;
-            if (e.saved) |t| std.posix.tcsetattr(std.Io.File.stdin().handle, .FLUSH, t) catch {};
-        }
-    };
-    if (comptime builtin.os.tag == .windows) warn(io, "(typed passphrases show on Windows) ", .{});
-    const echo = Echo.off();
+    const echo = try Echo.off();
     defer {
         echo.on();
         warn(io, "\n", .{});
     }
-    return readLine(io, arena, stdin);
+    warn(io, "{s}", .{text});
+    return readLine(io, arena, std.Io.File.stdin());
 }
 
 fn readLine(io: std.Io, arena: std.mem.Allocator, file: std.Io.File) ![]u8 {
     var buf: [1024]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf);
     var reader = file.readerStreaming(io, &buf);
     const line = (reader.interface.takeDelimiter('\n') catch return error.PassphraseTooLong) orelse "";
-    const trimmed = std.mem.trimEnd(u8, line, "\r");
-    const out = try arena.dupe(u8, trimmed);
-    std.crypto.secureZero(u8, &buf);
-    return out;
+    return arena.dupe(u8, std.mem.trimEnd(u8, line, "\r"));
 }
 
 fn say(io: std.Io, comptime fmt: []const u8, args: anytype) void {

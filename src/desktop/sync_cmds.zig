@@ -83,6 +83,7 @@ pub const Commands = struct {
     }
 
     pub fn sync_setup(arena: std.mem.Allocator, args: Credentials) !Result {
+        defer wipe(args.passphrase);
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
         const r = sync.setup(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
@@ -90,6 +91,7 @@ pub const Commands = struct {
     }
 
     pub fn sync_join(arena: std.mem.Allocator, args: Credentials) !Result {
+        defer wipe(args.passphrase);
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
         const r = sync.join(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
@@ -100,6 +102,11 @@ pub const Commands = struct {
         sync.stop(st.io, arena, st.data_path) catch |err| return fail(err);
     }
 };
+
+/// The passphrase, gone from the command's arena once used.
+fn wipe(passphrase: []const u8) void {
+    std.crypto.secureZero(u8, @constCast(passphrase));
+}
 
 fn fail(err: anyerror) error{CommandFailed} {
     std.log.info("sync: {s}", .{@errorName(err)});

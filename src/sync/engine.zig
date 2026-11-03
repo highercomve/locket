@@ -28,10 +28,14 @@ const connectors = @import("connectors.zig");
 const connector_mod = @import("connector.zig");
 const Connector = connector_mod.Connector;
 const Expect = connector_mod.Expect;
+const Wiping = @import("../wiping.zig").Wiping;
 
 pub const shared_vault = "vault.enc";
 const status_file = "sync-status.json";
 const max_rounds = 3;
+/// Conflict copies merged per round: the rest wait for the next sync (a
+/// shared folder full of "copies" can't exhaust memory).
+const max_copies = 16;
 
 pub const Report = struct {
     /// The local vault took changes from the shared one.
@@ -66,6 +70,11 @@ pub fn describe(err: anyerror) ?[]const u8 {
         error.WeakPassphrase => "the passphrase must be at least 8 characters",
         error.CorruptKeyFile => "the shared key file (key.json) is damaged",
         error.KeyMismatch => "this machine's key doesn't open the shared vault: join it again with the passphrase",
+        error.CorruptSharedVault => "the shared vault opens with this key but is damaged (or from a newer Locket): this machine's vault is untouched",
+        error.SharedVaultWithoutKey => "there's a shared vault there without its key file (key.json): wait for it to sync, or remove that locket folder to start over",
+        error.ObjectTooLarge => "a file in the shared area is larger than Locket reads (8 MiB)",
+        error.FolderAreaNotDirectory => "the sync folder's locket entry isn't a directory (a link?): Locket won't follow it",
+        error.FolderFileIsLink => "a file in the shared area is a link: Locket won't follow it",
         error.NotConfigured => "this vault isn't shared: set up or join a shared vault first",
         error.SyncBusy => "the shared vault kept changing while syncing: try again",
         error.UnknownConnector => "unknown sync connector",
@@ -111,7 +120,9 @@ pub fn summary(r: Report) []const u8 {
 
 /// One sync with the shared vault (see the file's comment).
 pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connector) !Report {
-    var arena = std.heap.ArenaAllocator.init(gpa);
+    // Every store decrypted or merged here holds every secret: zeroed when freed.
+    var wiping: Wiping = .{ .child = gpa };
+    var arena = std.heap.ArenaAllocator.init(wiping.allocator());
     defer arena.deinit();
     const a = arena.allocator();
     try c.check(io, a);
@@ -150,6 +161,7 @@ fn fetch(io: std.Io, a: std.mem.Allocator, c: Connector) !Remote {
     var copies: std.ArrayListUnmanaged(Copy) = .empty;
     for (try c.list(io, a)) |name| {
         if (!c.isCopyOf(name, shared_vault)) continue;
+        if (copies.items.len >= max_copies) break;
         const obj = try c.readOptional(io, a, name) orelse continue;
         try copies.append(a, .{ .name = name, .data = obj.data, .version = obj.version });
     }
@@ -172,7 +184,7 @@ fn mergeLocal(io: std.Io, a: std.mem.Allocator, data_path: []const u8, remote: R
     var merged = v.store;
     var main_digest: ?[32]u8 = null;
     if (remote.main) |m| {
-        const s = vault.unseal(a, v.key, m.data) catch |e| return if (e == error.CorruptVault) error.KeyMismatch else e;
+        const s = vault.unseal(a, v.key, m.data) catch |e| return sharedError(e);
         main_digest = try store.digest(a, &s);
         merged = try store.merge(a, &merged, &s);
     }
@@ -214,6 +226,16 @@ fn push(io: std.Io, a: std.mem.Allocator, c: Connector, remote: Remote, sealed: 
     return true;
 }
 
+/// The shared vault's unseal errors, as the sync's: a key that doesn't
+/// open it, or a vault that opens but isn't one.
+fn sharedError(err: anyerror) anyerror {
+    return switch (err) {
+        error.WrongKey => error.KeyMismatch,
+        error.CorruptVault => error.CorruptSharedVault,
+        else => err,
+    };
+}
+
 fn expectOf(version: ?[]const u8) Expect {
     return if (version) |ver| .{ .version = ver } else .any;
 }
@@ -227,13 +249,16 @@ fn sameBytes(x: ?[]const u8, y: ?[]const u8) bool {
 /// vault key, wrapped with `passphrase`, and the vault. The first machine
 /// does this; the others `join`.
 pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, location: []const u8, passphrase: []const u8) !Report {
-    var arena = std.heap.ArenaAllocator.init(gpa);
+    var wiping: Wiping = .{ .child = gpa };
+    var arena = std.heap.ArenaAllocator.init(wiping.allocator());
     defer arena.deinit();
     const a = arena.allocator();
-    const c = try connectors.make(a, kind, location);
-    try c.check(io, a);
+    const c = try ready(io, a, kind, location);
     if (passphrase.len < keywrap.min_passphrase) return error.WeakPassphrase;
     if (try c.readOptional(io, a, keywrap.file) != null) return error.AlreadyShared;
+    // A shared vault without its key: another machine's, half removed or
+    // with key.json not synced yet. Never sealed over with a new key.
+    if (try c.readOptional(io, a, shared_vault) != null) return error.SharedVaultWithoutKey;
     {
         var v = try vault.open(io, a, data_path, .write);
         defer v.close();
@@ -249,11 +274,11 @@ pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []
 /// merges this machine's vault into the shared one, and keeps the shared
 /// key from now on (re-sealing the local vault with it).
 pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, location: []const u8, passphrase: []const u8) !Report {
-    var arena = std.heap.ArenaAllocator.init(gpa);
+    var wiping: Wiping = .{ .child = gpa };
+    var arena = std.heap.ArenaAllocator.init(wiping.allocator());
     defer arena.deinit();
     const a = arena.allocator();
-    const c = try connectors.make(a, kind, location);
-    try c.check(io, a);
+    const c = try ready(io, a, kind, location);
     const wrapped = try c.readOptional(io, a, keywrap.file) orelse return error.NotShared;
     var key = try keywrap.unwrap(io, a, wrapped.data, passphrase);
     defer std.crypto.secureZero(u8, &key);
@@ -263,7 +288,7 @@ pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []c
         defer v.close();
         if (!std.mem.eql(u8, &key, &v.key)) {
             if (main) |m| {
-                const remote = vault.unseal(a, key, m) catch |e| return if (e == error.CorruptVault) error.KeyMismatch else e;
+                const remote = vault.unseal(a, key, m) catch |e| return sharedError(e);
                 v.replaceStore(try store.merge(a, &v.store, &remote));
             }
             try v.rekey(key);
@@ -296,6 +321,13 @@ pub fn isShared(io: std.Io, gpa: std.mem.Allocator, kind: []const u8, location: 
     return try c.readOptional(io, arena.allocator(), keywrap.file) != null;
 }
 
+/// A connector of `kind` at `location`, ready to use (or why not).
+fn ready(io: std.Io, a: std.mem.Allocator, kind: []const u8, location: []const u8) !Connector {
+    const c = try connectors.make(a, kind, location);
+    try c.check(io, a);
+    return c;
+}
+
 /// The Argon2id cost of new wraps (tests lower it).
 var wrap_params = keywrap.default_params;
 
@@ -313,7 +345,9 @@ pub fn recordStatus(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, o
     defer gpa.free(json);
     const path = std.fs.path.join(gpa, &.{ data_path, status_file }) catch return;
     defer gpa.free(path);
-    std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = json }) catch {};
+    const file = std.Io.Dir.cwd().createFile(io, path, .{ .permissions = vault.owner_only }) catch return;
+    defer file.close(io);
+    file.writeStreamingAll(io, json) catch {};
 }
 
 /// The last sync's outcome, or null when there has been none.
@@ -485,4 +519,60 @@ test "an unshared vault doesn't sync; stop keeps the vault" {
     try stop(io, g, w.a);
     try testing.expect(try syncIfShared(io, g, w.a) == null);
     try testing.expectEqualStrings("1", (try w.get(w.a, "hub", "default", "A")).?);
+}
+
+test "setup refuses a shared vault without its key, and a damaged shared vault isn't a key mismatch" {
+    var w = try World.init();
+    defer w.deinit();
+    const io = testing.io;
+    const g = testing.allocator;
+    const al = w.arena.allocator();
+    try w.set(w.a, "hub", "default", "A", "1");
+    const c = try w.connector();
+
+    // vault.enc there, key.json not (yet): never sealed over.
+    try c.write(io, al, shared_vault, "someone else's", .any);
+    try testing.expectError(error.SharedVaultWithoutKey, setup(io, g, w.a, "folder", w.shared, "a good passphrase"));
+    try c.remove(io, al, shared_vault, .any);
+    _ = try setup(io, g, w.a, "folder", w.shared, "a good passphrase");
+
+    // Sealed with the shared key, but not a vault.
+    var v = try vault.open(io, al, w.a, .read);
+    const key = v.key;
+    v.close();
+    var junk: [64]u8 = undefined;
+    const nonce: [12]u8 = @splat(1);
+    var tag: [16]u8 = undefined;
+    const plain = "not json";
+    std.crypto.aead.aes_gcm.Aes256Gcm.encrypt(junk[12..][0..plain.len], &tag, plain, "locket/v1", nonce, key);
+    @memcpy(junk[0..12], &nonce);
+    @memcpy(junk[12 + plain.len ..][0..16], &tag);
+    try c.write(io, al, shared_vault, junk[0 .. 12 + plain.len + 16], .any);
+    try testing.expectError(error.CorruptSharedVault, sync(io, g, w.a, c));
+    // Another key's vault: a mismatch.
+    const other: [vault.key_len]u8 = @splat(3);
+    var empty: store.Store = .{};
+    try c.write(io, al, shared_vault, try vault.seal(al, io, other, &empty), .any);
+    try testing.expectError(error.KeyMismatch, sync(io, g, w.a, c));
+    // The local vault is untouched either way.
+    try testing.expectEqualStrings("1", (try w.get(w.a, "hub", "default", "A")).?);
+}
+
+test "a sync round merges a bounded number of conflict copies" {
+    var w = try World.init();
+    defer w.deinit();
+    const io = testing.io;
+    const g = testing.allocator;
+    const al = w.arena.allocator();
+    try w.set(w.a, "hub", "default", "A", "1");
+    _ = try setup(io, g, w.a, "folder", w.shared, "a good passphrase");
+    const c = try w.connector();
+    const sealed = (try c.read(io, al, shared_vault)).data;
+    for (0..max_copies + 4) |i| {
+        try c.write(io, al, try std.fmt.allocPrint(al, "vault (conflict {d}).enc", .{i}), sealed, .any);
+    }
+    const first = try sync(io, g, w.a, c);
+    try testing.expectEqual(@as(usize, max_copies), first.copies);
+    const second = try sync(io, g, w.a, c);
+    try testing.expectEqual(@as(usize, 4), second.copies);
 }

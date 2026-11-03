@@ -33,4 +33,5 @@ test {
     _ = @import("sync/folder.zig");
     _ = @import("sync/nomadfs.zig");
     _ = @import("sync/connector.zig");
+    _ = @import("wiping.zig");
 }

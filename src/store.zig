@@ -434,6 +434,10 @@ pub fn unmarshal(gpa: std.mem.Allocator, plain: []const u8) !Store {
 /// No stamp is later than this (the year 3000): a vault claiming one is
 /// corrupt. Without the bound, one entry stamped at the end of time would
 /// win every merge forever and leave no room for a newer stamp.
+///
+/// Within the bound, a stamp far in the future still wins until then:
+/// last-writer-wins trusts the clocks of every machine holding the shared
+/// key, so the passphrase must only go to machines you trust.
 pub const max_t: i64 = 32_503_680_000_000;
 
 /// An entry's stamp; zero when it has none (versions 1 and 2).
@@ -456,6 +460,8 @@ fn readSecrets(gpa: std.mem.Allocator, value: std.json.Value, out: *Secrets, sta
     var it = value.object.iterator();
     while (it.next()) |entry| {
         try validName(entry.key_ptr.*);
+        // Secret names become environment variable names.
+        if (std.mem.indexOfScalar(u8, entry.key_ptr.*, '=') != null) return error.CorruptVault;
         const v = entry.value_ptr.*;
         const secret: Secret = if (stamped) blk: {
             if (v != .object) return error.CorruptVault;

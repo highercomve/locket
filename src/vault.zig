@@ -389,7 +389,9 @@ pub fn unseal(gpa: std.mem.Allocator, key: [key_len]u8, sealed: []const u8) !Sto
         std.crypto.secureZero(u8, plain);
         gpa.free(plain);
     }
-    Aes.decrypt(plain, ciphertext, tag, vault_ad, nonce, key) catch return error.CorruptVault;
+    // WrongKey: this key didn't seal it (or it was altered); CorruptVault:
+    // it opened, but isn't a vault.
+    Aes.decrypt(plain, ciphertext, tag, vault_ad, nonce, key) catch return error.WrongKey;
     return store.unmarshal(gpa, plain);
 }
 
@@ -436,10 +438,29 @@ pub fn checkName(name: []const u8) NameError!void {
 }
 
 /// A secret's name: a name that is also an environment variable name
-/// (`run` injects it as one), so no '='.
-pub fn checkVarName(name: []const u8) (NameError || error{InvalidVarName})!void {
+/// (`run` injects it as one), so no '=', and none of the variables that
+/// change how a program is loaded or a shell starts (reservedVarName).
+pub fn checkVarName(name: []const u8) (NameError || error{ InvalidVarName, ReservedVarName })!void {
     try checkName(name);
     if (std.mem.indexOfScalar(u8, name, '=') != null) return error.InvalidVarName;
+    if (reservedVarName(name)) return error.ReservedVarName;
+}
+
+/// Variables that run code in whatever `locket run` starts, before it
+/// reads its own environment: the dynamic loader's (LD_*, DYLD_*), the
+/// shells' startup files and exported functions, and interpreters' preload
+/// hooks. A synced vault comes from every machine holding the shared key,
+/// so `run` refuses these even when they arrive that way.
+pub fn reservedVarName(name: []const u8) bool {
+    const prefixes = [_][]const u8{ "LD_", "DYLD_", "BASH_FUNC_" };
+    for (prefixes) |p| if (std.ascii.startsWithIgnoreCase(name, p)) return true;
+    const exact = [_][]const u8{
+        "BASH_ENV", "ENV",         "SHELLOPTS",    "BASHOPTS",   "PS4",       "PROMPT_COMMAND", "IFS",
+        "CDPATH",   "NODE_OPTIONS", "PYTHONSTARTUP", "PYTHONPATH", "PERL5OPT", "PERL5LIB",       "RUBYOPT",
+        "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "ZDOTDIR",
+    };
+    for (exact) |e| if (std.ascii.eqlIgnoreCase(name, e)) return true;
+    return false;
 }
 
 /// What the core's errors mean, worded for people: both front ends show
@@ -450,6 +471,7 @@ pub fn describeError(err: anyerror) ?[]const u8 {
         error.NameTooLong => "names are at most 128 characters",
         error.InvalidName => "names can't contain spaces, '/' or control characters",
         error.InvalidVarName => "variable names can't contain '=' (they become environment variables)",
+        error.ReservedVarName => "that variable changes how programs start (LD_*, DYLD_*, BASH_ENV, NODE_OPTIONS...): Locket won't inject it; store it under another name",
         error.InvalidAddress => "expected project[/workspace][/NAME]; names have no spaces or '/'",
         error.Exists => "that name is already taken",
         error.NotFound => "not found: the vault changed on disk",
@@ -526,6 +548,12 @@ test checkName {
 test checkVarName {
     try checkVarName("DATABASE_URL");
     try std.testing.expectError(error.InvalidVarName, checkVarName("A=B"));
+    try std.testing.expectError(error.ReservedVarName, checkVarName("LD_PRELOAD"));
+    try std.testing.expectError(error.ReservedVarName, checkVarName("dyld_insert_libraries"));
+    try std.testing.expectError(error.ReservedVarName, checkVarName("BASH_ENV"));
+    try std.testing.expectError(error.ReservedVarName, checkVarName("BASH_FUNC_ls%%"));
+    try checkVarName("ENVIRONMENT");
+    try checkVarName("NODE_ENV");
 }
 
 test Ref {
@@ -562,7 +590,7 @@ test "Address.parse" {
 
 /// Files only their owner can read and write (0600). Windows has no mode
 /// bits: a file under the user's profile is the user's.
-const owner_only: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+pub const owner_only: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
 
 /// The vault's directory:
 ///
@@ -661,11 +689,16 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
     defer gpa.free(vault_path);
     if (v.dir.readFileAlloc(io, vault_path, gpa, .limited(64 << 20))) |sealed| {
         defer gpa.free(sealed);
-        v.store = unseal(gpa, v.key, sealed) catch |e| store: {
+        v.store = if (unseal(gpa, v.key, sealed)) |s| store: {
+            // A rekey interrupted before the vault was sealed with the new
+            // key: the old key still opens it, the next one is dropped.
+            if (mode == .write) try dropNextKey(io, gpa, v.dir_path);
+            break :store s;
+        } else |e| store: {
             // A rekey interrupted after the vault was sealed with the new key.
-            if (e != error.CorruptVault) return e;
-            const next = try loadNextKey(io, gpa, v.dir_path) orelse return e;
-            const s = try unseal(gpa, next, sealed);
+            if (e != error.WrongKey) return e;
+            const next = try loadNextKey(io, gpa, v.dir_path) orelse return error.CorruptVault;
+            const s = unseal(gpa, next, sealed) catch |e2| return if (e2 == error.WrongKey) error.CorruptVault else e2;
             v.key = next;
             if (mode == .write) try finishRekey(io, gpa, v.dir_path);
             break :store s;
@@ -698,6 +731,14 @@ fn loadDevice(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8, mode: Mo
 fn loadNextKey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !?[key_len]u8 {
     const path = try std.fs.path.join(gpa, &.{ dir_path, next_key_file });
     defer gpa.free(path);
+    const st = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
+    if (st.kind != .file) return null;
+    if (comptime builtin.os.tag != .windows) {
+        if (st.permissions.toMode() & 0o077 != 0) return error.InsecureKey;
+    }
     const k = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch |e| switch (e) {
         error.FileNotFound => return null,
         else => return e,
@@ -708,6 +749,16 @@ fn loadNextKey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !?[key_
     }
     if (k.len != key_len) return null;
     return k[0..key_len].*;
+}
+
+/// Removes a master.key.next the vault wasn't sealed with (gone: fine).
+fn dropNextKey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !void {
+    const next = try std.fs.path.join(gpa, &.{ dir_path, next_key_file });
+    defer gpa.free(next);
+    std.Io.Dir.cwd().deleteFile(io, next) catch |e| switch (e) {
+        error.FileNotFound => return,
+        else => return e,
+    };
 }
 
 fn finishRekey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !void {
@@ -821,7 +872,7 @@ test "seal and unseal; the wrong key is CorruptVault" {
     const back = try unseal(a, key, sealed);
     try std.testing.expectEqualStrings("v", back.projects.get("hub").?.workspaces.get(default_workspace).?.secrets.get("K").?.value);
     key[0] ^= 1;
-    try std.testing.expectError(error.CorruptVault, unseal(a, key, sealed));
+    try std.testing.expectError(error.WrongKey, unseal(a, key, sealed));
 }
 
 test "rekey re-seals with the new key, and open finishes an interrupted one" {
@@ -859,6 +910,15 @@ test "rekey re-seals with the new key, and open finishes an interrupted one" {
         defer v.close();
         try testing.expectEqual(newer, v.key);
         try testing.expectEqualStrings("v", v.secret("hub", default_workspace, "K").?);
+    }
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, next_key_file, .{}));
+    // Interrupted earlier: master.key.next written, the vault not resealed.
+    // The current key opens it; the stale next key is dropped.
+    try writeAtomic(io, testing.allocator, path, next_key_file, &new_key);
+    {
+        var v = try open(io, testing.allocator, path, .write);
+        defer v.close();
+        try testing.expectEqual(newer, v.key);
     }
     try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, next_key_file, .{}));
 }
