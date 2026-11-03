@@ -91,6 +91,13 @@ Ed25519 signature built into Locket and the file's SHA-256 before
 anything is replaced. A deb or rpm install is updated by your package
 manager instead.
 
+The app and the command line update together. The app's update also
+updates the `locket` in the same folder, and `locket update` also
+updates the `locket-app` AppImage (or `locket-app.exe`) in its folder.
+A newer Locket can store the vault in a format an older one can't read,
+so the two shouldn't drift apart. On macOS, the command line inside the
+`.app` updates with it.
+
 ### From source
 
 You need [Zig 0.16](https://ziglang.org/download/) and, for the desktop

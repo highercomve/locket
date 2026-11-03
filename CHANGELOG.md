@@ -29,6 +29,12 @@ uses [Semantic Versioning](https://semver.org/).
   arguments become the injected variables' values, for programs that take
   a secret as an argument (`... --expand -- kubectl exec -it pod -- mongo
   '$MONGO_URL'`).
+- **Updates move the app and the command line together**: the app's
+  update also updates the `locket` next to it, and `locket update` the
+  `locket-app` next to it. A vault from a newer Locket now says so
+  ("written by a newer Locket: update Locket") instead of "can't be
+  decrypted".
+- **Copy name** on every variable in the desktop app.
 - **Shell completion**: `locket completion bash|zsh|fish` completes the
   commands, projects, workspaces and variable names. After `locket run
   <workspace> --`, it completes the command being run with that command's
