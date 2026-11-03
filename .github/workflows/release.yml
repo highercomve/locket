@@ -1,0 +1,248 @@
+# Builds Locket on Linux, macOS and Windows, and on a v* tag publishes the
+# GitHub release with signed update manifests:
+#
+#   latest.json      locket-app: the AppImage (x86_64-linux), the .app
+#                    (aarch64-macos), the exe the installer put in place
+#                    (x86_64-windows)
+#   latest-cli.json  locket: x86_64/aarch64 Linux (static), aarch64/x86_64
+#                    macOS, x86_64 Windows
+#
+# Both are signed with LOCKET_UPDATE_KEY, whose public half is built in
+# (build.zig). A manual run (workflow_dispatch) builds and tests every
+# platform and keeps the files as workflow artifacts; it publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  NFPM_VERSION: 2.48.0
+
+jobs:
+  # The tag must be build.zig.zon's version, and CHANGELOG.md must say
+  # what's in it.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          v=$(sed -n 's/^ *\.version = "\(.*\)",/\1/p' build.zig.zon | head -n1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "build.zig.zon: $v"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "::error::tag $GITHUB_REF_NAME doesn't match build.zig.zon's version $v"; exit 1; }
+            grep -q "^## $v\b" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## $v' entry"; exit 1; }
+          fi
+
+  # Arch Linux: Oriel's GTK 4 bindings need a current GTK (Ubuntu LTS
+  # runners are too old), as Oriel's own release does.
+  linux:
+    needs: version
+    runs-on: ubuntu-latest
+    container: ghcr.io/archlinux/archlinux:latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - name: System packages
+        run: |
+          pacman -Syu --noconfirm --needed git pkgconf gtk4 wayland wayland-protocols libxkbcommon squashfs-tools file which
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin nfpm
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Tests
+        run: zig build test --summary all
+      - name: Command line (static, x86_64 and aarch64)
+        run: |
+          mkdir -p dist
+          for arch in x86_64 aarch64; do
+            zig build -Dapp=false -Dtarget=$arch-linux-musl -Doptimize=ReleaseSafe --prefix out/$arch
+            cp out/$arch/bin/locket dist/locket-$V-$arch-linux
+          done
+      - name: Smoke test
+        run: bash scripts/smoke.sh dist/locket-$V-x86_64-linux
+      - name: App (AppImage, deb, rpm)
+        run: |
+          zig build package -Doptimize=ReleaseSafe
+          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm dist/
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Tests
+        run: zig build test --summary all
+      - name: Command line (Apple silicon and Intel)
+        run: |
+          mkdir -p dist
+          for arch in aarch64 x86_64; do
+            zig build -Dapp=false -Dtarget=$arch-macos -Doptimize=ReleaseSafe --prefix out/$arch
+            cp out/$arch/bin/locket dist/locket-$V-$arch-macos
+          done
+      - name: Smoke test
+        run: bash scripts/smoke.sh dist/locket-$V-aarch64-macos
+      - name: App (.app, .dmg)
+        run: zig build package -Doptimize=ReleaseSafe
+      - name: The app starts
+        continue-on-error: true
+        run: |
+          app=$(find zig-out/package -maxdepth 1 -name '*.app' | head -1)
+          export LOCKET_HOME="$RUNNER_TEMP/vault"
+          "$app"/Contents/MacOS/locket-app > "$RUNNER_TEMP/app.log" 2>&1 &
+          pid=$!
+          sleep 15
+          tail -20 "$RUNNER_TEMP/app.log"
+          kill -0 "$pid"
+          kill "$pid"
+      - name: Collect
+        run: |
+          app=$(find zig-out/package -maxdepth 1 -name '*.app' | head -1)
+          cp "$(find zig-out/package -maxdepth 1 -name '*.dmg' | head -1)" "dist/Locket-$V-macos-arm64.dmg"
+          # The installed app's update payload: the bundle itself.
+          tar -C "$(dirname "$app")" -czf "dist/locket-app-$V-macos-arm64.app.tar.gz" "$(basename "$app")"
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: NSIS
+        run: command -v makensis || choco install nsis -y --no-progress
+      - name: Tests
+        run: zig build test --summary all
+      - name: Command line
+        run: |
+          mkdir -p dist
+          zig build -Dapp=false -Doptimize=ReleaseSafe --prefix out/cli
+          cp out/cli/bin/locket.exe dist/locket-$V-x86_64-windows.exe
+      - name: Smoke test
+        run: bash scripts/smoke.sh dist/locket-$V-x86_64-windows.exe
+      - name: App (setup.exe)
+        run: |
+          zig build package -Doptimize=ReleaseSafe
+          cp "$(find zig-out/package -maxdepth 1 -name '*-setup.exe' | head -1)" "dist/Locket-$V-setup.exe"
+          # The installed app's update payload: the exe the installer puts in place.
+          cp zig-out/bin/locket-app.exe "dist/locket-app-$V-x86_64-windows.exe"
+          ls -l dist
+      - name: The installer installs, and the app starts
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process "dist/Locket-$env:V-setup.exe" -ArgumentList '/S' -PassThru
+          if (-not $p.WaitForExit(180000)) { "installer still running"; $p.Kill(); exit 1 }
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'locket-app.exe' | Select-Object -First 1
+          if (-not $exe) { "not installed"; exit 1 }
+          "installed: $($exe.FullName)"
+          $env:LOCKET_HOME = Join-Path $env:RUNNER_TEMP 'vault'
+          $app = Start-Process $exe.FullName -PassThru
+          Start-Sleep 15
+          if ($app.HasExited) { "the app exited with $($app.ExitCode)"; exit 1 }
+          "the app is running"
+          Stop-Process -Id $app.Id -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  # On a tag: sign the update manifests and publish the release.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [version, linux, macos, windows]
+    runs-on: ubuntu-latest
+    container: ghcr.io/archlinux/archlinux:latest
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - name: System packages
+        run: pacman -Syu --noconfirm --needed git pkgconf gtk4 wayland wayland-protocols libxkbcommon python
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Sign the update manifests
+        env:
+          UPDATE_KEY: ${{ secrets.LOCKET_UPDATE_KEY }}
+        run: |
+          [ -n "$UPDATE_KEY" ] || { echo "::error::LOCKET_UPDATE_KEY is not set"; exit 1; }
+          mkdir -p dist m
+          cp artifacts/* dist/
+          key="$(mktemp)"; trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$UPDATE_KEY" > "$key"; chmod 600 "$key"
+          base="https://github.com/highercomve/locket/releases/download/v$V"
+          sign() { # <asset> <app id> <target> <format>
+            zig build sign-update -- "dist/$1" --app-id "$2" --version "$V" --target "$3" \
+              --format "$4" --url "$base/$1" --key "$key" --out "m/$2-$3.json"
+          }
+          app=com.foreachdeveloper.locket
+          sign "locket-app-$V-x86_64.AppImage" $app x86_64-linux appimage
+          sign "locket-app-$V-macos-arm64.app.tar.gz" $app aarch64-macos app.tar.gz
+          sign "locket-app-$V-x86_64-windows.exe" $app x86_64-windows raw
+          cli=com.foreachdeveloper.locket.cli
+          for t in x86_64-linux aarch64-linux aarch64-macos x86_64-macos; do sign "locket-$V-$t" $cli $t raw; done
+          sign "locket-$V-x86_64-windows.exe" $cli x86_64-windows raw
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          zig build combine-manifests -- m/$app-*.json --pub-date "$now" --out dist/latest.json
+          zig build combine-manifests -- m/$cli-*.json --pub-date "$now" --out dist/latest-cli.json
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: |
+          python3 - "$V" <<'PY'
+          import pathlib, re, sys
+          version = sys.argv[1]
+          lines = pathlib.Path("CHANGELOG.md").read_text().splitlines()
+          start = next(i for i, l in enumerate(lines) if re.match(rf"## \[?{re.escape(version)}\b", l))
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          body = "\n".join(lines[start + 1:end]).strip()
+          pathlib.Path("release-notes.md").write_text(f"{body}\n\n**Install:** see the [README](https://github.com/highercomve/locket#install) or [locket.foreachdeveloper.com](https://locket.foreachdeveloper.com). Every file is listed in `SHA256SUMS`.\n")
+          PY
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Locket ${{ env.V }}
+          files: dist/*
+          body_path: release-notes.md
+          # Only -rc/-beta tags are pre-releases (releases/latest skips those).
+          prerelease: ${{ contains(github.ref_name, '-') }}

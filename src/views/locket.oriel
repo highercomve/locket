@@ -32,6 +32,7 @@
   monofield: height=32 padding=0,10,0,10 mono=true font-size=12.5 color=$sand background=$well border-width=1 border-color=#f2e8d826 radius=5 placeholder-color=$dust
   primary: height=32 padding=0,14,0,14 font-size=12.5 font-weight=700 color=#1c1203 background=$amber border-width=0 radius=5
   ghost: height=32 padding=0,12,0,12 font-size=12.5 font-weight=600 color=$sand background=#f2e8d80d border-width=1 border-color=#f2e8d826 radius=5
+  vbtn: height=32 padding=0,10,0,10 mono=true font-size=11 color=$dim background=#00000000 border-width=1 border-color=#f2e8d81a radius=5
   danger: height=32 padding=0,12,0,12 font-size=12.5 font-weight=600 color=$danger background=#ff7b7212 border-width=1 border-color=#ff7b7255 radius=5
   title: font-size=18 font-weight=800 color=$cream letter-spacing=-0.2 font-family="system-ui, sans-serif"
   meta: font-size=12.5 color=$dim
@@ -69,6 +70,8 @@
     </row>
     <view grow="1" shrink="1" basis="0" />
     <text id="status" class="status" nowrap="true">{status}</text>
+    <control id="update" class="primary" value="Update" display="none" />
+    <control id="version" class="vbtn" value="v0" tooltip="Check for updates" />
     <control id="reload" class="ghost" value="Reload" tooltip="Re-read the sealed vault (picks up CLI changes)" />
   </row>
 

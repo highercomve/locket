@@ -14,11 +14,13 @@ const st = @import("state.zig");
 const w = @import("widgets.zig");
 const input = @import("input.zig");
 const view = @import("render.zig");
+const update_ui = @import("update_ui.zig");
 
 const ui = oriel.ui;
 const sid = st.sid;
 const s = &st.s;
 const render = view.render;
+const status = view.status;
 
 pub fn boot(e: *ui.Engine) !void {
     s.gpa = e.gpa;
@@ -34,7 +36,11 @@ pub fn boot(e: *ui.Engine) !void {
     _ = try st.Shell.mount(&e.tree, st.shell_base, st.shell_styles, &bindings);
     e.tree.root = e.tree.get(st.shell_base);
     try render(e);
+    try update_ui.start(e);
 }
+
+/// Answers to commands the window invoked (the update commands).
+pub const resolved = update_ui.resolved;
 
 pub fn event(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) bool {
     return handle(e, node, kind, data) catch |err| {
@@ -60,6 +66,8 @@ const Action = *const fn (*ui.Engine) anyerror!bool;
 /// The shell's buttons and what each does.
 const clicks = .{
     .{ "reload", reload },
+    .{ "version", update_ui.clickVersion },
+    .{ "update", update_ui.clickUpdate },
     .{ "add-project", createProject },
     .{ "edit-project", openProjectForm },
     .{ "project-cancel", closeProjectForm },
@@ -439,11 +447,6 @@ fn focusField(e: *ui.Engine, node: i64) void {
     e.tree.layout();
     s.pending_focus = node;
     e.backend.add_timer(e.backend.ctx, e, st.focus_timer, 40);
-}
-
-fn status(e: *ui.Engine, message: []const u8) void {
-    w.text(e, sid("status"), message) catch {};
-    e.tree.layout();
 }
 
 fn statusFmt(e: *ui.Engine, comptime fmt: []const u8, args: anytype) !void {

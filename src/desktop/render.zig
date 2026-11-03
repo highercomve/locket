@@ -182,6 +182,12 @@ fn dupeAll(a: std.mem.Allocator, items: []const []const u8) ![]const []const u8 
     return out;
 }
 
+/// Shows `message` on the header's status line.
+pub fn status(e: *ui.Engine, message: []const u8) void {
+    w.text(e, sid("status"), message) catch {};
+    e.tree.layout();
+}
+
 /// The message the window shows for an error.
 pub fn describe(err: anyerror) []const u8 {
     return switch (err) {

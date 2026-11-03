@@ -310,7 +310,7 @@ pub const Vault = struct {
         const tmp_path = try std.fmt.allocPrint(v.gpa, "{s}.tmp", .{vault_path});
         defer v.gpa.free(tmp_path);
         {
-            const f = try v.dir.createFile(v.io, tmp_path, .{ .permissions = .fromMode(0o600) });
+            const f = try v.dir.createFile(v.io, tmp_path, .{ .permissions = owner_only });
             defer f.close(v.io);
             try f.writeStreamingAll(v.io, sealed);
             try f.sync(v.io);
@@ -572,14 +572,61 @@ test "Address.parse" {
 
 // ------------------------------------------------------------------- open
 
-/// The locket directory: `<data root>/locket`.
+/// Files only their owner can read and write (0600). Windows has no mode
+/// bits: a file under the user's profile is the user's.
+const owner_only: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+
+/// The vault's directory:
+///
+///     $LOCKET_HOME                         when set (any platform)
+///     Linux     $XDG_DATA_HOME/locket      default ~/.local/share/locket
+///     macOS     ~/Library/Application Support/locket
+///     Windows   %APPDATA%\locket
 pub fn dataDir(env: anytype, gpa: std.mem.Allocator) ![]u8 {
-    const xdg = env.get("XDG_DATA_HOME") orelse "";
-    if (xdg.len > 0 and xdg[0] == '/') {
-        return std.fs.path.join(gpa, &.{ xdg, "locket" });
+    return dataDirFor(builtin.os.tag, env, gpa);
+}
+
+fn dataDirFor(os: std.Target.Os.Tag, env: anytype, gpa: std.mem.Allocator) ![]u8 {
+    if (env.get("LOCKET_HOME")) |dir| if (dir.len > 0) return gpa.dupe(u8, dir);
+    switch (os) {
+        .windows => {
+            const appdata = env.get("APPDATA") orelse return error.NoDataDir;
+            return std.fs.path.join(gpa, &.{ appdata, "locket" });
+        },
+        .macos => {
+            const home = env.get("HOME") orelse return error.NoDataDir;
+            return std.fs.path.join(gpa, &.{ home, "Library", "Application Support", "locket" });
+        },
+        else => {
+            const xdg = env.get("XDG_DATA_HOME") orelse "";
+            if (xdg.len > 0 and xdg[0] == '/') return std.fs.path.join(gpa, &.{ xdg, "locket" });
+            const home = env.get("HOME") orelse return error.NoDataDir;
+            return std.fs.path.join(gpa, &.{ home, ".local", "share", "locket" });
+        },
     }
-    const home = env.get("HOME") orelse "/nonexistent";
-    return std.fs.path.join(gpa, &.{ home, ".local", "share", "locket" });
+}
+
+test dataDirFor {
+    const Env = struct {
+        pairs: []const [2][]const u8,
+        fn get(e: @This(), key: []const u8) ?[]const u8 {
+            for (e.pairs) |p| if (std.mem.eql(u8, p[0], key)) return p[1];
+            return null;
+        }
+    };
+    const a = std.testing.allocator;
+    const cases = [_]struct { os: std.Target.Os.Tag, env: Env, want: []const u8 }{
+        .{ .os = .linux, .env = .{ .pairs = &.{.{ "HOME", "/h" }} }, .want = "/h/.local/share/locket" },
+        .{ .os = .linux, .env = .{ .pairs = &.{ .{ "HOME", "/h" }, .{ "XDG_DATA_HOME", "/x" } } }, .want = "/x/locket" },
+        .{ .os = .macos, .env = .{ .pairs = &.{.{ "HOME", "/h" }} }, .want = "/h/Library/Application Support/locket" },
+        .{ .os = .linux, .env = .{ .pairs = &.{ .{ "HOME", "/h" }, .{ "LOCKET_HOME", "/v" } } }, .want = "/v" },
+    };
+    for (cases) |c| {
+        const got = try dataDirFor(c.os, c.env, a);
+        defer a.free(got);
+        try std.testing.expectEqualStrings(c.want, got);
+    }
+    try std.testing.expectError(error.NoDataDir, dataDirFor(.windows, Env{ .pairs = &.{} }, a));
 }
 
 /// Loads the vault at `data_path` (creating the directory). See `Mode`;
@@ -604,7 +651,7 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
     const lock = try cwd.createFile(io, lock_path, .{
         .truncate = false,
         .lock = if (mode == .write) .exclusive else .shared,
-        .permissions = .fromMode(0o600),
+        .permissions = owner_only,
     });
     var keep_lock = false;
     defer if (!keep_lock) lock.close(io);
@@ -652,7 +699,9 @@ fn loadKey(v: *Vault, key_path: []const u8) !bool {
         error.FileNotFound => return false,
         else => return e,
     };
-    if (builtin.os.tag != .windows and st.permissions.toMode() & 0o077 != 0) return error.InsecureKey;
+    if (comptime builtin.os.tag != .windows) {
+        if (st.permissions.toMode() & 0o077 != 0) return error.InsecureKey;
+    }
     const k = try v.dir.readFileAlloc(v.io, key_path, v.gpa, .limited(64));
     defer {
         std.crypto.secureZero(u8, k);
@@ -669,7 +718,7 @@ fn makeKey(v: *Vault, key_path: []const u8) !void {
     assert(v.mode == .write);
     const f = try v.dir.createFile(v.io, key_path, .{
         .exclusive = true,
-        .permissions = .fromMode(0o600),
+        .permissions = owner_only,
     });
     defer f.close(v.io);
     v.io.random(&v.key);
@@ -799,10 +848,13 @@ test "open, save and reopen on disk; edits hold the lock; insecure keys are refu
         try testing.expectEqualStrings("s3cret", v.secret("hub", "stage", "TOKEN").?);
         try testing.expect(v.lock == null);
     }
-    const key = try tmp.dir.openFile(io, key_file, .{});
-    defer key.close(io);
-    try key.setPermissions(io, .fromMode(0o644));
-    try testing.expectError(error.InsecureKey, open(io, testing.allocator, path, .read));
+    // Windows has no mode bits to get wrong.
+    if (comptime builtin.os.tag != .windows) {
+        const key = try tmp.dir.openFile(io, key_file, .{});
+        defer key.close(io);
+        try key.setPermissions(io, .fromMode(0o644));
+        try testing.expectError(error.InsecureKey, open(io, testing.allocator, path, .read));
+    }
 }
 
 test "editing a secret removed meanwhile is NotFound, not a re-add" {

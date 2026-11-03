@@ -60,7 +60,8 @@ jobs:
           command: pages deploy site/public --project-name=${{ env.PROJECT }} --branch=main --commit-dirty=true
 
       # The custom domain, once: Cloudflare answers "already added" after
-      # that. Its DNS record is a CNAME locket -> locket.pages.dev in the
+      # that. Its DNS record is a CNAME locket -> locket-4fi.pages.dev (the
+      # project's pages.dev name: locket.pages.dev was taken) in the
       # foreachdeveloper.com zone (added with the domain when the zone is in
       # the same account; by hand otherwise).
       - name: Custom domain

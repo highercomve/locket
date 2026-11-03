@@ -19,7 +19,9 @@
 //! @atlas layer: front
 
 const std = @import("std");
+const build_info = @import("build_info");
 const vault = @import("vault.zig");
+const update = @import("update.zig");
 
 const assert = std.debug.assert;
 const Ref = vault.Ref;
@@ -36,6 +38,12 @@ pub fn main(init: std.process.Init, argv: []const []const u8) !u8 {
     if (argv.len == 0) return usage(2);
     const cmd = std.meta.stringToEnum(Command, argv[0]) orelse return usage(2);
     if (cmd.isHelp()) return usage(0);
+    // Neither of these touches the vault.
+    if (cmd.isVersion()) return printVersion();
+    if (cmd == .update) {
+        const options = parseUpdate(argv[1..]) catch return usage(2);
+        return update.run(io, arena, options);
+    }
 
     const data_path = try vault.dataDir(init.environ_map, arena);
     var v = vault.open(io, arena, data_path, cmd.mode()) catch |err| {
@@ -55,12 +63,20 @@ const Command = enum {
     get,
     rm,
     run,
+    update,
+    version,
+    @"--version",
+    @"-V",
     help,
     @"--help",
     @"-h",
 
     fn isHelp(c: Command) bool {
         return c == .help or c == .@"--help" or c == .@"-h";
+    }
+
+    fn isVersion(c: Command) bool {
+        return c == .version or c == .@"--version" or c == .@"-V";
     }
 
     /// Commands that change the vault hold its write lock.
@@ -88,6 +104,8 @@ fn usage(code: u8) u8 {
         \\  locket rm --workspace project/workspace
         \\  locket rm --project project
         \\  locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
+        \\  locket update [--check] [--yes]       install the latest release
+        \\  locket --version
         \\
         \\Without a workspace, the project's `default` workspace is meant.
         \\run injects the variables under their stored names; --prefix
@@ -96,6 +114,26 @@ fn usage(code: u8) u8 {
     ) catch {};
     w.interface.flush() catch {};
     return code;
+}
+
+fn printVersion() u8 {
+    var o: Out = .{};
+    const out = o.init();
+    out.print("locket {s} ({s})\n", .{ build_info.version, build_info.commit }) catch {};
+    out.flush() catch {};
+    return 0;
+}
+
+fn parseUpdate(args: []const []const u8) !update.Options {
+    var options: update.Options = .{};
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--check")) {
+            options.check = true;
+        } else if (std.mem.eql(u8, arg, "--yes") or std.mem.eql(u8, arg, "-y")) {
+            options.yes = true;
+        } else return error.Usage;
+    }
+    return options;
 }
 
 /// Prints `locket: <message>` and reports failure to the shell.
@@ -130,7 +168,7 @@ fn dispatch(
             if (args.len != 1) return error.Usage;
             return if (cmd == .set) setSecret(v, arena, args[0]) else getSecret(v, args[0]);
         },
-        .help, .@"--help", .@"-h" => unreachable, // main answers these
+        .help, .@"--help", .@"-h", .update, .version, .@"--version", .@"-V" => unreachable, // main answers these
     }
 }
 
@@ -416,6 +454,15 @@ test Command {
     try testing.expectEqual(vault.Mode.write, Command.rm.mode());
     try testing.expectEqual(vault.Mode.read, Command.run.mode());
     try testing.expect(std.meta.stringToEnum(Command, "nope") == null);
+}
+
+test parseUpdate {
+    try testing.expect((try parseUpdate(&.{"--check"})).check);
+    try testing.expect((try parseUpdate(&.{ "--yes", "--check" })).yes);
+    try testing.expectError(error.Usage, parseUpdate(&.{"--force"}));
+    for ([_][]const u8{ "version", "--version", "-V" }) |word| {
+        try testing.expect(std.meta.stringToEnum(Command, word).?.isVersion());
+    }
 }
 
 test rmTarget {
