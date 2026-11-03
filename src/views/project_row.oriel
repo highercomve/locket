@@ -1,0 +1,13 @@
+<style>
+  prow: height=40 padding=0,10,0,10 align=center gap=10 radius=5 border-width=1 border-color=#00000000
+  dot: width=6 height=6 radius=99 background=#6f6a63
+  pname: mono=true font-size=12.5 font-weight=600 color=#f2e8d8
+  pcount: mono=true font-size=10.5 color=#6f6a63
+  @when (hover) { prow: background=#f2e8d80a }
+  @when (selected) { prow: background=#f6b04214 border-color=#f6b04255  dot: background=#f6b042  pname: color=#f6b042  pcount: color=#a99f8f }
+</style>
+<row id="row" class="prow" clickable="true" width="100%">
+  <view id="dot" class="dot" pointer-events="none" />
+  <text id="name" class="pname" nowrap="true" grow="1" shrink="1" basis="0" pointer-events="none">{name}</text>
+  <text id="count" class="pcount" nowrap="true" pointer-events="none">{count}</text>
+</row>

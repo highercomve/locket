@@ -1,0 +1,21 @@
+.{
+    .name = .locket,
+    .version = "0.1.0",
+    // Derived from the package name; changing it has security and trust implications.
+    .fingerprint = 0xf765d8f575b311a1,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Pinned to commits on main: the Oriel renderer (.oriel views
+        // driven from Zig) and zigatlas's build step are newer than their
+        // last tags. Move to tagged releases when those include them.
+        .oriel = .{
+            .url = "git+https://github.com/highercomve/Oriel#4f6f66bf0d48057cc3c9deb639d984ec3596e0bb",
+            .hash = "oriel-0.20.11-K1NO5Xdp_gAF95uPNyoF2L7S1_U14s-PBt9x8zth6DcH",
+        },
+        .zigatlas = .{
+            .url = "git+https://github.com/highercomve/zigatlas#cdc7a116886946fb399bb3937497eb7519d5927f",
+            .hash = "zigatlas-0.1.0-zbV5qzaiAgCJtloEGjUzhQbkQPCetuwYa1Cc-MvrgGlH",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE", "icon.png" },
+}

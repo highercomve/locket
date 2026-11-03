@@ -1,0 +1,11 @@
+<style>
+  tab: height=28 padding=0,10,0,10 align=center gap=7 radius=5 border-width=1 border-color=#f2e8d81f background=#f2e8d808
+  tname: mono=true font-size=12 font-weight=600 color=#a99f8f
+  tcount: mono=true font-size=10 color=#6f6a63
+  @when (hover) { tab: background=#f2e8d812 }
+  @when (selected) { tab: background=#5ce1e614 border-color=#5ce1e666  tname: color=#5ce1e6  tcount: color=#a99f8f }
+</style>
+<row id="tab" class="tab" clickable="true">
+  <text id="name" class="tname" nowrap="true" pointer-events="none">{name}</text>
+  <text id="count" class="tcount" nowrap="true" pointer-events="none">{count}</text>
+</row>

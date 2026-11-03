@@ -1,0 +1,290 @@
+<p align="center">
+  <img src="icon.png" width="112" alt="Locket's icon: an amber locket with a teal keyhole">
+</p>
+
+<h1 align="center">Locket</h1>
+
+<p align="center">
+  A local secrets vault for AI agents.<br>
+  Give an agent the environment it needs without the values ever reaching
+  the chat, the logs, <code>ps</code> or your shell history.
+</p>
+
+<p align="center">
+  <img src="docs/images/workspaces.png" alt="Locket's window: projects on the left, the pantahub project's workspace tabs (default, stage, prod), and the stage workspace's variables with one revealed">
+</p>
+
+Locket keeps your API keys, tokens and connection strings in one
+AES-256-GCM–sealed file on your machine, organised as **projects →
+workspaces → variables**. When an agent (or you) needs them, it runs:
+
+```sh
+locket run pantahub/stage -- ./deploy.sh
+```
+
+`deploy.sh` starts with `PH_TOKEN`, `DATABASE_URL` and the rest of
+`pantahub/stage` in its environment. Locket prints only which workspace
+it used and how many variables it injected. An agent can be told to run
+that command without ever being shown, or asked to paste, a secret.
+
+Two programs share one core and one vault file:
+
+- **`locket`**, the command line: small, static, with no GUI libraries.
+- **`locket-app`**, the desktop window, built on
+  [Oriel](https://github.com/highercomve/Oriel)'s renderer: compiled
+  `.oriel` views driven from Zig, no web view, no JavaScript.
+
+Both are written in Zig 0.16. Locket runs on Linux today.
+
+## Contents
+
+- [Install](#install)
+- [Projects, workspaces, variables](#projects-workspaces-variables)
+- [The command line](#the-command-line)
+- [The desktop app](#the-desktop-app)
+- [Using it with agents](#using-it-with-agents)
+- [Safety](#safety)
+- [On disk](#on-disk)
+- [Development](#development)
+
+## Install
+
+You need [Zig 0.16](https://ziglang.org/download/) and, for the desktop
+app, the GTK 4 development files (`gtk4` on Arch, `libgtk-4-dev` on
+Debian and Ubuntu, `gtk4-devel` on Fedora).
+
+```sh
+git clone https://github.com/highercomve/locket
+cd locket
+scripts/install-local.sh
+```
+
+That builds both programs (ReleaseSafe) and installs them for your user:
+
+| Path | What |
+|---|---|
+| `~/.local/bin/locket` | the command line |
+| `~/.local/bin/locket-app` | the desktop app (an AppImage) |
+| `~/.local/share/applications/com.foreachdeveloper.locket.desktop` | its launcher entry |
+| `~/.local/share/icons/hicolor/*/apps/com.foreachdeveloper.locket.png` | its icons |
+
+It stops a running `locket-app`, replaces it and starts the new one. Run
+it again to update. Options:
+
+```sh
+NO_RESTART=1 scripts/install-local.sh   # leave the app stopped
+NO_APP=1 scripts/install-local.sh       # only the command line (no GTK needed)
+NO_DESKTOP=1 scripts/install-local.sh   # no launcher entry or icons
+ORIEL_FORK=~/Code/oriel scripts/install-local.sh   # build against a local Oriel
+```
+
+The install never touches your vault. Make sure `~/.local/bin` is on
+your `PATH`.
+
+## Projects, workspaces, variables
+
+A **project** (`pantahub`) groups what one agent or tool needs. Its
+variables live in **workspaces**, one per environment (`pantahub/stage`,
+`pantahub/prod`). Every project has a **`default`** workspace, which comes
+first and can't be renamed or removed: a project "without workspaces"
+keeps its variables there, and leaving the workspace out of an address
+means it.
+
+| Address | Means |
+|---|---|
+| `pantahub` | the project, or its `default` workspace (for `run`) |
+| `pantahub/stage` | the `stage` workspace |
+| `pantahub/API_URL` | `API_URL` in `pantahub/default` (for `set`, `get`, `rm`) |
+| `pantahub/stage/DATABASE_URL` | `DATABASE_URL` in `pantahub/stage` |
+
+Names are 1–128 bytes with no spaces, `/` or control characters.
+Variable names can't contain `=` either, because they become environment
+variables.
+
+## The command line
+
+```sh
+# Store a variable. The value comes from stdin, so it's never in argv
+# (visible in `ps`) or in your shell history.
+printf '%s' "$TOKEN" | locket set pantahub/stage/PH_TOKEN
+locket set pantahub/API_URL < api_url.txt          # into pantahub/default
+
+locket ls                          # projects
+locket ls pantahub                 # its workspaces
+locket ls pantahub/stage           # a workspace's variable names
+locket get pantahub/stage/PH_TOKEN # prints one value (use sparingly)
+
+locket rm pantahub/stage/PH_TOKEN      # one variable
+locket rm --workspace pantahub/stage   # a whole workspace
+locket rm --project pantahub           # a whole project
+```
+
+A session with the demo vault from the screenshots:
+
+```console
+$ locket ls
+pantahub  (3 workspaces, 7 secrets)
+website  (2 workspaces, 2 secrets)
+infra  (2 workspaces, 2 secrets)
+$ locket ls pantahub
+pantahub/default  (1 secret)
+pantahub/stage  (4 secrets)
+pantahub/prod  (2 secrets)
+$ locket ls pantahub/stage
+pantahub/stage/PH_TOKEN
+pantahub/stage/DATABASE_URL
+pantahub/stage/OPENAI_API_KEY
+pantahub/stage/S3_BUCKET
+$ locket run pantahub/stage -- sh -c 'echo "connecting to ${DATABASE_URL%%:demo*}:…"'
+connecting to postgres://agent:…
+[locket injected 4 variables from pantahub/stage into sh]
+$ locket rm pantahub/stage
+locket: pantahub/stage is a workspace: locket rm --workspace pantahub/stage
+```
+
+### `locket run`
+
+```sh
+locket run pantahub/stage -- ./my-agent.sh          # every variable of the workspace
+locket run pantahub -- ./my-agent.sh                # pantahub/default
+locket run pantahub/stage --only PH_TOKEN,S3_BUCKET -- ./upload.sh
+locket run pantahub/stage --prefix -- ./my-agent.sh # as LOCKET_PH_TOKEN, …
+```
+
+- The workspace's variables are layered **over** the inherited
+  environment, so the command keeps `PATH`, `HOME` and the rest.
+- They're injected under their stored names: store them under the names
+  your tools expect (`DATABASE_URL`, `OPENAI_API_KEY`, …). With
+  `--prefix`, `API_KEY` becomes `LOCKET_API_KEY` (uppercased, other bytes
+  as `_`).
+- `locket run` exits with the command's exit code, or 128+n if a signal
+  killed it.
+- Locket writes one line, on stderr: the workspace and a count, never a
+  value. The command's own stdout is left alone.
+
+## The desktop app
+
+Open **Locket** from your launcher, or run `locket-app`. It manages the
+same vault as the CLI, and *Reload* picks up changes the CLI made while
+the window was open.
+
+| | |
+|---|---|
+| ![Adding a variable: the editor with a name and a masked value](docs/images/editor.png) | ![A project's default workspace, the one a project starts with](docs/images/default-workspace.png) |
+| **Add or edit** a variable: the value field is masked; Enter saves, Esc cancels. | Every project starts with **`default`**; add workspaces with *+ Workspace*. |
+| ![Deleting a workspace asks first, naming what goes with it](docs/images/confirm.png) | ![The empty vault, before the first project](docs/images/empty.png) |
+| **Deletes ask first** and say what goes with it. Enter follows the focused button (*Cancel*). | **First run**: name a project on the left. |
+
+- **Projects** (left): create one by name, select it, *Rename / describe*
+  it, or *Delete project*.
+- **Workspaces** (tabs): `default` first; create, select, *Rename* or
+  *Delete workspace*.
+- **Variables** of the selected workspace: masked as `•••••••• N chars`
+  until you click *Show*; *Edit* renames and/or replaces the value;
+  *Delete* asks first.
+- The **Inject** line shows the `locket run` command for the workspace
+  you're looking at.
+
+The values in these screenshots are made-up demo values.
+
+## Using it with agents
+
+Store the variables once, then tell the agent (in `AGENTS.md`,
+`CLAUDE.md`, or the task itself) to run commands through Locket instead of
+asking for credentials:
+
+```markdown
+## Credentials
+
+Never ask for or print secrets. Commands that need credentials run
+through Locket, which injects them into the command's environment:
+
+    locket run pantahub/stage -- <command>
+
+`locket ls pantahub/stage` lists the variable names available.
+```
+
+The agent works with names (`locket ls`) and a command it runs gets
+exactly one workspace's variables. This keeps values out of the
+conversation by convention, not by enforcement: an agent that can run
+shell commands as you could also run `locket get`. The planned MCP server
+is meant to close that gap by offering `run` without `get`.
+
+## Safety
+
+- **One writer at a time.** Every change, from the CLI or the window,
+  holds an exclusive lock on `<data>/lock` from reading the vault to
+  saving it, so several agents and the window never lose each other's
+  edits. Reads take a shared lock just while reading.
+- **Crash-safe saves.** A save writes a temp file, fsyncs it, renames it
+  over `vault.enc` and fsyncs the directory: a crash leaves either the old
+  vault or the new one.
+- **Values stay out of output.** Only `locket get` prints a value, and
+  only when you ask. Values are zeroed in memory when the vault is
+  closed, and the window zeroes a field's text when it clears it.
+- **What the seal protects.** `vault.enc` is safe when copied on its own
+  (backups, sync folders). `master.key` sits beside it, readable by your
+  user only; Locket refuses to open a key that group or others can read.
+  Anything running as your user can read both files. Moving the key into
+  the OS keychain is on the roadmap.
+
+## On disk
+
+`$XDG_DATA_HOME/locket` (default `~/.local/share/locket`):
+
+```
+master.key   32 random bytes, mode 0600: the vault's key
+vault.enc    nonce (12) || ciphertext || tag (16), mode 0600:
+             the vault's JSON, sealed with AES-256-GCM
+lock         empty; held while a process reads or writes the vault
+```
+
+`vault.enc` decrypts to:
+
+```json
+{ "version": 2, "projects": { "pantahub": { "description": "",
+    "workspaces": { "default": { "secrets": { "API_URL": "..." } },
+                    "stage":   { "secrets": { "PH_TOKEN": "..." } } } } } }
+```
+
+## Development
+
+```sh
+zig build                # zig-out/bin/locket (CLI) + zig-out/bin/locket-app
+zig build run            # run locket-app
+zig build cli -- ls      # run the CLI
+zig build test           # unit tests: vault core, CLI, input decoding
+zig build atlas          # code map in zig-out/atlas/ (zigatlas)
+zig build package        # deb, rpm and AppImage in zig-out/package/
+```
+
+[Oriel](https://github.com/highercomve/Oriel) and
+[zigatlas](https://github.com/highercomve/zigatlas) are pinned to commits
+in `build.zig.zon`; `zig build` fetches them.
+
+```
+src/vault.zig      the core: model, sealed storage, locking, address rules
+src/cli.zig        the CLI's commands
+src/desktop/       the window: app.zig (events, actions), render.zig,
+                   state.zig, widgets.zig (Oriel helpers), input.zig
+src/cli_main.zig   locket's entry point
+src/main.zig       locket-app's entry point
+src/views/*.oriel  the window's views
+docs/icon.svg      the icon's source (resvg docs/icon.svg icon.png)
+```
+
+`zig build atlas` checks the layers: `app` (thin entry points) over
+`front` (the CLI and the window) over `core`. Imports point down, never
+up, and both front ends use the core's operations and address rules, so
+nothing about the vault is implemented twice.
+
+### Roadmap
+
+- An MCP server: vault tools for agents over stdio, serving a command's
+  variables without ever returning values.
+- The OS keychain instead of `master.key`.
+- macOS and Windows builds (Oriel supports both).
+
+## License
+
+[MIT](LICENSE) © 2026 Sergio Marin

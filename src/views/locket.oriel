@@ -1,0 +1,199 @@
+<style>
+  /* forEach developer · "night-caravan cartography" (the NomadFS system):
+     instrument plates on the night sky, amber = action, oasis teal =
+     anything live, sand on dust. */
+  $night: #0b0e16
+  $plate: #131926
+  $well: #0e131d
+  $rule: #f2e8d817
+  $sand: #f2e8d8
+  $cream: #f5efe6
+  $dim: #a99f8f
+  $dust: #6f6a63
+  $amber: #f6b042
+  $oasis: #5ce1e6
+  $danger: #ff7b72
+
+  root: padding=12,14,12,14 gap=10 background=$night
+  head: height=46 padding=0,2,0,2 align=center gap=12 border-width=0,0,1,0 border-color=$rule
+  brand: font-size=20 font-weight=800 color=$cream letter-spacing=-0.3 font-family="system-ui, sans-serif"
+  chip: padding=5,10,5,8 align=center gap=8 border-width=1 border-color=#5ce1e64d background=#2ec4b614 radius=4
+  chiplabel: mono=true font-size=10 font-weight=600 color=$oasis letter-spacing=1.2
+  status: mono=true font-size=11 color=$dim
+  main: gap=10
+  plate: shadow=0,18,40,#000000e6 background=$plate border-width=1 border-color=$rule radius=6 clip=true
+  pline: height=38 padding=0,12,0,14 align=center gap=10 border-width=0,0,1,0 border-color=$rule
+  plabel: mono=true font-size=10 font-weight=600 color=$amber letter-spacing=1.8
+  pinfo: mono=true font-size=10 font-weight=600 color=$oasis letter-spacing=1.5
+  list: padding=6 gap=2 scroll=true scrollbar=auto
+  form: padding=10,12,12,12 gap=8 border-width=1,0,0,0 border-color=$rule
+  flabel: mono=true font-size=9.5 font-weight=600 color=$dust letter-spacing=1.6
+  field: height=32 padding=0,10,0,10 font-size=13 color=$sand background=$well border-width=1 border-color=#f2e8d826 radius=5 placeholder-color=$dust
+  monofield: height=32 padding=0,10,0,10 mono=true font-size=12.5 color=$sand background=$well border-width=1 border-color=#f2e8d826 radius=5 placeholder-color=$dust
+  primary: height=32 padding=0,14,0,14 font-size=12.5 font-weight=700 color=#1c1203 background=$amber border-width=0 radius=5
+  ghost: height=32 padding=0,12,0,12 font-size=12.5 font-weight=600 color=$sand background=#f2e8d80d border-width=1 border-color=#f2e8d826 radius=5
+  danger: height=32 padding=0,12,0,12 font-size=12.5 font-weight=600 color=$danger background=#ff7b7212 border-width=1 border-color=#ff7b7255 radius=5
+  title: font-size=18 font-weight=800 color=$cream letter-spacing=-0.2 font-family="system-ui, sans-serif"
+  meta: font-size=12.5 color=$dim
+  hint: mono=true font-size=11 color=$dust
+  code: mono=true font-size=11.5 color=$oasis
+  empty: padding=40 gap=10 align=center justify=center
+  emptytitle: font-size=16 font-weight=700 color=$cream
+  emptytext: font-size=12.5 color=$dim text-align=center line-height=19
+  editor: margin=0,12,12,12 padding=12 gap=8 background=$well border-width=1 border-color=#f6b04255 radius=6
+  wsbar: padding=8,12,8,14 gap=10 align=center border-width=0,0,1,0 border-color=$rule
+  tabs: gap=6 wrap=wrap align=center
+  foot: height=30 align=center gap=10 padding=0,6,0,6 border-width=1,0,0,0 border-color=$rule
+  footpath: mono=true font-size=10.5 color=$dust letter-spacing=0.4
+  brandfoot: mono=true font-size=10 font-weight=600 color=$amber letter-spacing=1.8
+  scrim: background=#05070cb8 align=center justify=center
+  dialog: width=420 padding=20 gap=12 background=$plate border-width=1 border-color=#ff7b7255 radius=8 shadow=0,24,60,#000000f0
+  dtitle: font-size=16 font-weight=700 color=$cream
+  dtext: font-size=12.5 color=$dim line-height=19
+</style>
+<column id="root" class="root" width="100%" height="100%">
+  <row id="head" class="head" width="100%">
+    <view width="26" height="26" radius="6" background="#131926" border-width="1" border-color="#f6b04266" align="center" justify="center">
+      <view width="10" height="10" radius="3" background="#f6b042" />
+    </view>
+    <text id="brand" class="brand">Locket</text>
+    <row class="chip">
+      <view width="8" height="8" radius="99" background="#5ce1e6" />
+      <text class="chiplabel" nowrap="true">SEALED · AES-256</text>
+    </row>
+    <view grow="1" shrink="1" basis="0" />
+    <text id="status" class="status" nowrap="true">{status}</text>
+    <control id="reload" class="ghost" value="Reload" tooltip="Re-read the sealed vault (picks up CLI changes)" />
+  </row>
+
+  <row id="main" class="main" grow="1" shrink="1" basis="0" width="100%">
+    <column id="side" class="plate" width="250" height="100%">
+      <view position="absolute" top="0" left="0" width="14" height="14" border-width="1.5,0,0,1.5" border-color="#f6b042 #f6b04200 #f6b04200 #f6b042" />
+      <row class="pline" width="100%">
+        <text class="plabel" nowrap="true">PROJECTS</text>
+        <view grow="1" shrink="1" basis="0" />
+        <text id="project-count" class="pinfo" nowrap="true">{project_count}</text>
+      </row>
+      <column id="projects" class="list" grow="1" shrink="1" basis="0" width="100%" />
+      <column class="form" width="100%">
+        <text class="flabel">NEW PROJECT</text>
+        <input id="new-project" class="monofield" width="100%" placeholder="e.g. prod, stage, infra" spellcheck="false" autocorrect="false" />
+        <control id="add-project" class="primary" width="100%" value="+ Create project" />
+      </column>
+    </column>
+
+    <column id="content" class="plate" grow="1" shrink="1" basis="0" height="100%">
+      <view position="absolute" bottom="0" right="0" width="14" height="14" border-width="0,1.5,1.5,0" border-color="#f6b042 #f6b042 #f6b04200 #f6b04200" />
+
+      <column id="empty" class="empty" grow="1" width="100%">
+        <view width="44" height="44" radius="10" background="#0e131d" border-width="1" border-color="#f6b04266" align="center" justify="center">
+          <view width="16" height="16" radius="4" background="#f6b042" />
+        </view>
+        <text id="empty-title" class="emptytitle">{empty_title}</text>
+        <text id="empty-text" class="emptytext" max-width="380">{empty_text}</text>
+      </column>
+
+      <column id="pane" grow="1" shrink="1" basis="0" width="100%" display="none">
+        <column padding="14,14,12,14" gap="10" border-width="0,0,1,0" border-color="#f2e8d817">
+          <row align="center" gap="10">
+            <column grow="1" shrink="1" basis="0" gap="3">
+              <text id="project-title" class="title" nowrap="true">{project_title}</text>
+              <text id="project-meta" class="meta" nowrap="true">{project_meta}</text>
+            </column>
+            <control id="edit-project" class="ghost" value="Rename / describe" />
+            <control id="delete-project" class="danger" value="Delete project" />
+          </row>
+          <column id="project-form" gap="8" display="none">
+            <row gap="8">
+              <column gap="4" width="200">
+                <text class="flabel">NAME</text>
+                <input id="project-name" class="monofield" width="100%" spellcheck="false" autocorrect="false" />
+              </column>
+              <column gap="4" grow="1" shrink="1" basis="0">
+                <text class="flabel">DESCRIPTION</text>
+                <input id="project-desc" class="field" width="100%" placeholder="What this project's secrets are for" />
+              </column>
+            </row>
+            <row gap="8" justify="flex-end">
+              <control id="project-cancel" class="ghost" value="Cancel" />
+              <control id="project-save" class="primary" value="Save project" />
+            </row>
+          </column>
+        </column>
+
+        <row id="wsbar" class="wsbar" width="100%">
+          <text class="plabel" nowrap="true">WORKSPACES</text>
+          <row id="workspaces" class="tabs" grow="1" shrink="1" basis="0" />
+          <input id="new-workspace" class="monofield" height="28" width="150" placeholder="stage, prod…" spellcheck="false" autocorrect="false" />
+          <control id="add-workspace" class="ghost" height="28" value="+ Workspace" />
+        </row>
+
+        <column id="ws-section" grow="1" shrink="1" basis="0" width="100%">
+        <row class="pline" width="100%">
+          <text id="ws-title" class="plabel" nowrap="true">{ws_title}</text>
+          <text id="secret-count" class="pinfo" nowrap="true">{secret_count}</text>
+          <view grow="1" shrink="1" basis="0" />
+          <control id="rename-workspace" class="ghost" height="26" value="Rename" />
+          <control id="delete-workspace" class="danger" height="26" value="Delete workspace" />
+          <control id="new-secret" class="primary" height="26" value="+ Add variable" />
+        </row>
+
+        <row id="ws-form" padding="10,12,10,12" gap="8" align="center" border-width="0,0,1,0" border-color="#f2e8d817" display="none">
+          <text class="flabel">RENAME WORKSPACE</text>
+          <input id="ws-name" class="monofield" height="28" width="200" spellcheck="false" autocorrect="false" />
+          <view grow="1" shrink="1" basis="0" />
+          <control id="ws-cancel" class="ghost" height="28" value="Cancel" />
+          <control id="ws-save" class="primary" height="28" value="Save" />
+        </row>
+
+        <row padding="8,14,8,14" gap="8" align="center" border-width="0,0,1,0" border-color="#f2e8d80f">
+          <text class="hint" nowrap="true">Inject:</text>
+          <text id="run-hint" class="code" nowrap="true">{run_hint}</text>
+        </row>
+
+        <column id="editor" class="editor" display="none">
+          <text id="editor-title" class="plabel">{editor_title}</text>
+          <row gap="8">
+            <column gap="4" width="240">
+              <text class="flabel">NAME</text>
+              <input id="secret-name" class="monofield" width="100%" placeholder="OPENAI_API_KEY" spellcheck="false" autocorrect="false" autocapitalize="characters" />
+            </column>
+            <column gap="4" grow="1" shrink="1" basis="0">
+              <text class="flabel">VALUE</text>
+              <input id="secret-value" class="monofield" width="100%" password="true" placeholder="Paste the value" spellcheck="false" autocorrect="false" />
+            </column>
+          </row>
+          <row gap="8" align="center">
+            <text id="editor-hint" class="hint" grow="1" shrink="1" basis="0">{editor_hint}</text>
+            <control id="secret-cancel" class="ghost" value="Cancel" />
+            <control id="secret-save" class="primary" value="Save variable" />
+          </row>
+        </column>
+
+        <column id="secrets" class="list" grow="1" shrink="1" basis="0" width="100%" />
+        <column id="no-secrets" padding="28" align="center" gap="6" display="none">
+          <text class="emptytitle" font-size="14">No variables yet</text>
+          <text class="emptytext">Add one with “+ Add variable”. Values are sealed in the vault and only reach a process's environment through locket run.</text>
+        </column>
+        </column>
+      </column>
+    </column>
+  </row>
+
+  <row id="foot" class="foot" width="100%">
+    <text id="vault-path" class="footpath" nowrap="true">{vault_path}</text>
+    <view grow="1" shrink="1" basis="0" />
+    <text class="brandfoot" nowrap="true">FOR EACH DEVELOPER</text>
+  </row>
+
+  <column id="confirm" class="scrim" position="absolute" top="0" left="0" width="100%" height="100%" z="100" display="none">
+    <column class="dialog">
+      <text id="confirm-title" class="dtitle">{confirm_title}</text>
+      <text id="confirm-text" class="dtext">{confirm_text}</text>
+      <row gap="8" justify="flex-end">
+        <control id="confirm-cancel" class="ghost" value="Cancel" />
+        <control id="confirm-ok" class="danger" value="Delete" />
+      </row>
+    </column>
+  </column>
+</column>
