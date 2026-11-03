@@ -1,6 +1,6 @@
 .{
     .name = .locket,
-    .version = "0.2.0",
+    .version = "0.2.1",
     // Derived from the package name; changing it has security and trust implications.
     .fingerprint = 0xf765d8f575b311a1,
     .minimum_zig_version = "0.16.0",
