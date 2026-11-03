@@ -11,15 +11,19 @@ pub const Shell = ui.View(@embedFile("../views/locket.oriel"));
 pub const ProjectRow = ui.View(@embedFile("../views/project_row.oriel"));
 pub const WorkspaceTab = ui.View(@embedFile("../views/workspace_tab.oriel"));
 pub const SecretRow = ui.View(@embedFile("../views/secret_row.oriel"));
+/// A sync backend's button on the settings page (one per connectors.kinds).
+pub const ConnChoice = ui.View(@embedFile("../views/conn_choice.oriel"));
 
 pub const shell_base: i64 = 100;
 pub const shell_styles: i64 = 10_000;
 pub const project_styles: i64 = 11_000;
 pub const secret_styles: i64 = 12_000;
 pub const tab_styles: i64 = 13_000;
+pub const conn_styles: i64 = 14_000;
 pub const project_rows: i64 = 20_000;
 pub const tab_rows: i64 = 40_000;
 pub const secret_rows: i64 = 60_000;
+pub const conn_rows: i64 = 80_000;
 pub const row_stride: i64 = 16;
 pub const max_rows: usize = 1000;
 
@@ -27,6 +31,8 @@ comptime {
     std.debug.assert(ProjectRow.node_count <= row_stride);
     std.debug.assert(WorkspaceTab.node_count <= row_stride);
     std.debug.assert(SecretRow.node_count <= row_stride);
+    std.debug.assert(ConnChoice.node_count <= row_stride);
+    std.debug.assert(secret_rows + max_rows * row_stride <= conn_rows);
     std.debug.assert(shell_base + Shell.node_count < project_rows);
     std.debug.assert(project_rows + max_rows * row_stride <= tab_rows);
     std.debug.assert(tab_rows + max_rows * row_stride <= secret_rows);
@@ -94,9 +100,9 @@ pub const focus_timer: u32 = 1;
 
 pub var io: std.Io = undefined;
 pub var data_path: []const u8 = "";
-/// NomadFS's default swarm folder here ("" when the platform has none),
+/// The user's home folder (for the sync backends' default locations),
 /// found once at start: worker threads don't read the environment.
-pub var default_swarm: []const u8 = "";
+pub var home: ?[]const u8 = null;
 pub var s: State = .{};
 
 pub fn isSelected(selected: ?[]const u8, name: []const u8) bool {

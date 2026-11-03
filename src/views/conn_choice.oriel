@@ -1,0 +1,6 @@
+<style>
+  choice: height=30 padding=0,14,0,14 font-size=12.5 font-weight=600 color=#a99f8f background=#f2e8d808 border-width=1 border-color=#f2e8d826 radius=5
+</style>
+<row id="row">
+  <control id="btn" class="choice" value="Backend" />
+</row>

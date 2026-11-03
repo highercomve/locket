@@ -12,7 +12,7 @@ const st = @import("desktop/state.zig");
 const desktop = @import("desktop/app.zig");
 const updates = @import("desktop/updates.zig");
 const sync_cmds = @import("desktop/sync_cmds.zig");
-const nomadfs = @import("sync/nomadfs.zig");
+const connectors = @import("sync/connectors.zig");
 
 /// The commands the window invokes off the UI thread: updates and sync.
 pub const Commands = struct {
@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !u8 {
     st.io = init.io;
     st.data_path = try vault.dataDir(init.environ_map, init.arena.allocator());
     updates.init(init.io);
-    st.default_swarm = (try nomadfs.defaultPath(init.environ_map, init.arena.allocator())) orelse "";
+    if (connectors.homeDir(init.environ_map)) |h| st.home = try init.arena.allocator().dupe(u8, h);
     oriel.ui.configure(.{
         .boot = desktop.boot,
         .event = desktop.event,

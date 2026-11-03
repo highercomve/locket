@@ -30,6 +30,7 @@ pub fn boot(e: *ui.Engine) !void {
     try st.ProjectRow.prepare(&e.tree, st.project_styles);
     try st.WorkspaceTab.prepare(&e.tree, st.tab_styles);
     try st.SecretRow.prepare(&e.tree, st.secret_styles);
+    try st.ConnChoice.prepare(&e.tree, st.conn_styles);
     var bindings: [st.Shell.binding_names.len]ui.Binding = undefined;
     inline for (st.Shell.binding_names, 0..) |name, i| {
         bindings[i] = .{ .name = name, .value = if (comptime std.mem.eql(u8, name, "vault_path")) st.data_path else "" };
@@ -74,8 +75,6 @@ const clicks = .{
     .{ "reload", reload },
     .{ "open-settings", sync_ui.openPage },
     .{ "close-settings", sync_ui.closePage },
-    .{ "conn-nomadfs", sync_ui.chooseNomadfs },
-    .{ "conn-folder", sync_ui.chooseFolder },
     .{ "sync-connect", sync_ui.connect },
     .{ "sync-now", sync_ui.syncNow },
     .{ "sync-stop", sync_ui.stopSync },
@@ -144,6 +143,7 @@ fn rowClick(e: *ui.Engine, node: i64) !bool {
         try selectWorkspace(e, s.workspaces[hit.index]);
         return true;
     }
+    if (input.rowAt(node, st.conn_rows, st.row_stride, sync_ui.kindCount())) |hit| return sync_ui.chooseKind(e, hit.index);
     const hit = input.rowAt(node, st.secret_rows, st.row_stride, s.secrets.len) orelse return false;
     const name = s.secrets[hit.index];
     if (hit.local == st.SecretRow.id("reveal", 0)) {

@@ -126,9 +126,9 @@ fn usage(code: u8) u8 {
         \\  locket rm --project project
         \\  locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
         \\  locket sync [status | now | stop]       share the vault between machines:
-        \\  locket sync setup nomadfs [SWARM]     ...from the first machine
-        \\  locket sync join nomadfs [SWARM]      ...from every other machine
-        \\  locket sync setup|join folder FOLDER  ...through any synced folder
+        \\  locket sync setup <backend> [LOCATION]  ...from the first machine
+        \\  locket sync join <backend> [LOCATION]   ...from every other machine
+        \\  locket sync backends                    nomadfs, folder, ...
         \\  locket update [--check] [--yes]       install the latest release
         \\  locket --version
         \\

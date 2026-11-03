@@ -35,7 +35,8 @@ const Probe = enum { unknown, checking, shared, empty, unavailable };
 /// The page's state. Strings from the last `sync_info` live in `arena`.
 var arena: std.heap.ArenaAllocator = undefined;
 var open = false;
-var kind: []const u8 = "nomadfs";
+/// The chosen backend: a connectors.kinds id (they're comptime strings).
+var kind: []const u8 = sync.connectors.kinds[0].id;
 var probe: Probe = .unknown;
 var probe_message: []const u8 = "";
 var info: struct {
@@ -83,7 +84,7 @@ pub fn openPage(e: *ui.Engine) !bool {
     try w.label(e, sid("open-settings"), "Settings");
     var buf: [128]u8 = undefined;
     try w.text(e, sid("set-version"), try std.fmt.bufPrint(&buf, "Locket {s} ({s})", .{ build_info.version, build_info.commit }));
-    if (fieldEmpty(e)) try w.setField(e, sid("sync-path"), defaultPath());
+    if (fieldEmpty(e)) try setDefaultLocation(e);
     try paint(e);
     try invoke(e, .info, .{});
     if (!info.shared) try startProbe(e);
@@ -99,18 +100,17 @@ pub fn closePage(e: *ui.Engine) !bool {
     return true;
 }
 
-pub fn chooseNomadfs(e: *ui.Engine) !bool {
-    return choose(e, "nomadfs");
+/// How many backend buttons there are (one per connectors.kinds).
+pub fn kindCount() usize {
+    return sync.connectors.kinds.len;
 }
 
-pub fn chooseFolder(e: *ui.Engine) !bool {
-    return choose(e, "folder");
-}
-
-fn choose(e: *ui.Engine, k: []const u8) !bool {
-    if (std.mem.eql(u8, kind, k)) return true;
-    kind = k;
-    try w.setField(e, sid("sync-path"), defaultPath());
+/// A backend's button: that backend, at its default location.
+pub fn chooseKind(e: *ui.Engine, index: usize) !bool {
+    const k = sync.connectors.kinds[index];
+    if (info.shared or std.mem.eql(u8, kind, k.id)) return true;
+    kind = k.id;
+    try setDefaultLocation(e);
     try startProbe(e);
     return true;
 }
@@ -144,7 +144,7 @@ pub fn connect(e: *ui.Engine) !bool {
     errdefer connecting = false;
     const joining = probe == .shared;
     try busyText(e, if (joining) "Unlocking the shared key and merging…" else "Wrapping the key and sharing the vault…");
-    try invoke(e, if (joining) .join else .setup, .{ .kind = kind, .path = path, .passphrase = pass });
+    try invoke(e, if (joining) .join else .setup, .{ .kind = kind, .location = path, .passphrase = pass });
     try clearPassphrases(e);
     return true;
 }
@@ -247,7 +247,9 @@ fn takeInfo(e: *ui.Engine, json: []const u8) !void {
         .device = try a.dupe(u8, p.value.device),
     };
     probe_message = "";
-    if (p.value.shared) kind = if (std.mem.eql(u8, p.value.connector, "folder")) "folder" else "nomadfs";
+    if (p.value.shared) {
+        if (sync.connectors.find(p.value.connector)) |k| kind = k.id;
+    }
     // First word of a newly shared vault: sync now, so the window is current.
     if (info.shared and !was_shared and !syncing) {
         syncing = true;
@@ -278,9 +280,8 @@ fn paint(e: *ui.Engine) !void {
 
     const k = sync.connectors.find(kind).?;
     try w.text(e, sid("conn-summary"), k.summary);
-    try w.text(e, sid("path-label"), if (std.mem.eql(u8, kind, "nomadfs")) "SWARM FOLDER (NOMADFS'S MOUNT)" else "FOLDER");
-    try w.choose(e, sid("conn-nomadfs"), std.mem.eql(u8, kind, "nomadfs"));
-    try w.choose(e, sid("conn-folder"), std.mem.eql(u8, kind, "folder"));
+    try w.text(e, sid("path-label"), k.location_label);
+    try paintKinds(e);
 
     const joining = probe == .shared;
     try w.display(e, sid("pass2-box"), !joining);
@@ -314,7 +315,7 @@ fn startProbe(e: *ui.Engine) !void {
         probe_message = "Type the folder's path.";
         return paint(e);
     }
-    try invoke(e, .probe, .{ .kind = kind, .path = path });
+    try invoke(e, .probe, .{ .kind = kind, .location = path });
 }
 
 fn invoke(e: *ui.Engine, req: Request, args: anytype) !void {
@@ -329,8 +330,24 @@ fn invoke(e: *ui.Engine, req: Request, args: anytype) !void {
     try ui.invoke(e, @intFromEnum(req), name, args);
 }
 
-fn defaultPath() []const u8 {
-    return if (std.mem.eql(u8, kind, "nomadfs")) st.default_swarm else "";
+/// One button per backend (connectors.kinds), the chosen one lit.
+fn paintKinds(e: *ui.Engine) !void {
+    var ids: [sync.connectors.kinds.len]i64 = undefined;
+    for (sync.connectors.kinds, 0..) |k, i| {
+        ids[i] = try view.mountRow(st.ConnChoice, e, st.conn_rows, st.conn_styles, i, &.{});
+        const btn = st.ConnChoice.id("btn", ids[i]);
+        try w.label(e, btn, k.label);
+        try w.choose(e, btn, std.mem.eql(u8, kind, k.id));
+    }
+    try view.stamp(e, sid("conn-choices"), &ids);
+}
+
+/// The location field: the chosen backend's default (empty when none).
+fn setDefaultLocation(e: *ui.Engine) !void {
+    var a = std.heap.ArenaAllocator.init(e.gpa);
+    defer a.deinit();
+    const location = try sync.connectors.defaultLocation(kind, st.home, a.allocator());
+    try w.setField(e, sid("sync-path"), location orelse "");
 }
 
 fn fieldEmpty(e: *ui.Engine) bool {

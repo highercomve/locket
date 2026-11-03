@@ -218,10 +218,7 @@
         <column id="sync-form" gap="10">
           <column gap="4">
             <text class="flabel">SHARE THROUGH</text>
-            <row gap="8">
-              <control id="conn-nomadfs" class="choice" value="NomadFS" />
-              <control id="conn-folder" class="choice" value="Folder" />
-            </row>
+            <row id="conn-choices" gap="8" />
             <text id="conn-summary" class="hint">{conn_summary}</text>
           </column>
           <column gap="4">

@@ -1,7 +1,8 @@
 //! The folder connector: a shared vault in `<root>/locket/` of any
 //! directory another tool keeps in step between machines (Syncthing,
-//! Dropbox, a network share). nomadfs.zig is this, pointed at NomadFS's
-//! swarm folder.
+//! Dropbox, a network share, NomadFS's mount). Plain files have no
+//! versions: writes aren't conditional (`versioned` is false), and the
+//! engine re-reads before writing instead.
 //!
 //! `root` must exist: Locket creates only its own `locket/` inside it, so
 //! a sync folder that isn't there (an unmounted share) is reported, not
@@ -9,8 +10,11 @@
 //! @atlas layer: sync
 
 const std = @import("std");
-const Connector = @import("connector.zig").Connector;
-const isConflictCopy = @import("connector.zig").isConflictCopy;
+const connector_mod = @import("connector.zig");
+const Connector = connector_mod.Connector;
+const Object = connector_mod.Object;
+const Expect = connector_mod.Expect;
+const isConflictCopy = connector_mod.isConflictCopy;
 
 /// Locket's own area inside the folder.
 pub const area = "locket";
@@ -18,10 +22,6 @@ pub const area = "locket";
 pub const Folder = struct {
     /// The shared folder (absolute).
     root: []const u8,
-    /// How to name it for people ("Folder", "NomadFS swarm folder").
-    label: []const u8 = "folder",
-    /// Why `root` may be missing, when it is (a backend-specific hint).
-    missing: anyerror = error.FolderMissing,
 
     pub fn connector(f: *Folder) Connector {
         return .{ .ptr = f, .vtable = &vtable };
@@ -33,6 +33,7 @@ pub const Folder = struct {
         .read = read,
         .write = write,
         .remove = remove,
+        .versioned = versioned,
         .isCopyOf = isCopyOf,
         .describe = describe,
     };
@@ -41,11 +42,11 @@ pub const Folder = struct {
         return @ptrCast(@alignCast(ptr));
     }
 
-    fn check(ptr: *anyopaque, io: std.Io) anyerror!void {
+    fn check(ptr: *anyopaque, io: std.Io, _: std.mem.Allocator) anyerror!void {
         const f = self(ptr);
         if (!std.fs.path.isAbsolute(f.root)) return error.FolderNotAbsolute;
         const st = std.Io.Dir.cwd().statFile(io, f.root, .{}) catch |e| switch (e) {
-            error.FileNotFound => return f.missing,
+            error.FileNotFound => return error.FolderMissing,
             else => return e,
         };
         if (st.kind != .directory) return error.FolderMissing;
@@ -57,7 +58,7 @@ pub const Folder = struct {
 
     fn list(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator) anyerror![]const []const u8 {
         const f = self(ptr);
-        try check(ptr, io);
+        try check(ptr, io, gpa);
         const path = try f.areaPath(gpa, null);
         defer gpa.free(path);
         var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |e| switch (e) {
@@ -80,23 +81,30 @@ pub const Folder = struct {
         return names.toOwnedSlice(gpa);
     }
 
-    fn read(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8) anyerror![]u8 {
+    fn read(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8) anyerror!Object {
         const f = self(ptr);
-        try check(ptr, io);
+        try check(ptr, io, gpa);
         const path = try f.areaPath(gpa, name);
         defer gpa.free(path);
-        return std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 20));
+        return .{ .data = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64 << 20)) };
     }
 
     /// A hidden temp file in the same folder, renamed over the target: the
     /// sync tool sees one complete file (NomadFS adds it as one edit).
-    fn write(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8, data: []const u8) anyerror!void {
+    /// `expect` isn't enforced (no versions), except `.absent`, checked
+    /// just before writing (best effort).
+    fn write(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8, data: []const u8, expect: Expect) anyerror!void {
         const f = self(ptr);
-        try check(ptr, io);
+        try check(ptr, io, gpa);
         const cwd = std.Io.Dir.cwd();
         const dir = try f.areaPath(gpa, null);
         defer gpa.free(dir);
         try cwd.createDirPath(io, dir);
+        if (expect == .absent) {
+            const existing = try f.areaPath(gpa, name);
+            defer gpa.free(existing);
+            if (cwd.statFile(io, existing, .{})) |_| return error.Changed else |_| {}
+        }
         var rnd: u32 = 0;
         io.random(std.mem.asBytes(&rnd));
         const tmp_name = try std.fmt.allocPrint(gpa, ".{s}.{x}.tmp", .{ name, rnd });
@@ -115,9 +123,9 @@ pub const Folder = struct {
         try cwd.rename(tmp, cwd, dest, io);
     }
 
-    fn remove(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8) anyerror!void {
+    fn remove(ptr: *anyopaque, io: std.Io, gpa: std.mem.Allocator, name: []const u8, _: Expect) anyerror!void {
         const f = self(ptr);
-        try check(ptr, io);
+        try check(ptr, io, gpa);
         const path = try f.areaPath(gpa, name);
         defer gpa.free(path);
         std.Io.Dir.cwd().deleteFile(io, path) catch |e| switch (e) {
@@ -126,13 +134,17 @@ pub const Folder = struct {
         };
     }
 
+    fn versioned(_: *anyopaque) bool {
+        return false;
+    }
+
     fn isCopyOf(_: *anyopaque, name: []const u8, base: []const u8) bool {
         return isConflictCopy(name, base);
     }
 
     fn describe(ptr: *anyopaque, gpa: std.mem.Allocator) anyerror![]const u8 {
         const f = self(ptr);
-        return std.fmt.allocPrint(gpa, "{s} at {s}", .{ f.label, f.root });
+        return std.fmt.allocPrint(gpa, "folder at {s}", .{f.root});
     }
 };
 
@@ -148,20 +160,21 @@ test "a folder connector writes, lists, reads and removes, and refuses a missing
 
     var f: Folder = .{ .root = root };
     const c = f.connector();
-    try c.check(io);
+    try c.check(io, a);
     try t.expectEqual(@as(usize, 0), (try c.list(io, a)).len);
     try t.expect(try c.readOptional(io, a, "vault.enc") == null);
-    try c.write(io, a, "vault.enc", "one");
-    try c.write(io, a, "vault.enc", "two");
-    try t.expectEqualStrings("two", try c.read(io, a, "vault.enc"));
+    try c.write(io, a, "vault.enc", "one", .absent);
+    try t.expectError(error.Changed, c.write(io, a, "vault.enc", "dup", .absent));
+    try c.write(io, a, "vault.enc", "two", .any);
+    try t.expectEqualStrings("two", (try c.read(io, a, "vault.enc")).data);
     const names = try c.list(io, a);
     try t.expectEqual(@as(usize, 1), names.len); // the temp files are gone
-    try c.remove(io, a, "vault.enc");
-    try c.remove(io, a, "vault.enc"); // already gone: fine
+    try c.remove(io, a, "vault.enc", .any);
+    try c.remove(io, a, "vault.enc", .any); // already gone: fine
 
     var missing: Folder = .{ .root = try std.fs.path.join(a, &.{ root, "nope" }) };
-    try t.expectError(error.FolderMissing, missing.connector().check(io));
-    try t.expectError(error.FolderMissing, missing.connector().write(io, a, "x", "y"));
+    try t.expectError(error.FolderMissing, missing.connector().check(io, a));
+    try t.expectError(error.FolderMissing, missing.connector().write(io, a, "x", "y", .any));
     var relative: Folder = .{ .root = "relative/path" };
-    try t.expectError(error.FolderNotAbsolute, relative.connector().check(io));
+    try t.expectError(error.FolderNotAbsolute, relative.connector().check(io, a));
 }

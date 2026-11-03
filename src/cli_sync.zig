@@ -1,11 +1,14 @@
 //! `locket sync`: sharing the vault between machines (src/sync.zig).
 //!
 //!     locket sync status
-//!     locket sync setup nomadfs [SWARM_FOLDER]     the first machine
-//!     locket sync join nomadfs [SWARM_FOLDER]      every other machine
-//!     locket sync setup|join folder FOLDER         any synced folder
+//!     locket sync setup <backend> [LOCATION]    the first machine
+//!     locket sync join <backend> [LOCATION]     every other machine
 //!     locket sync now
 //!     locket sync stop
+//!     locket sync backends                      what <backend> can be
+//!
+//! The backends are sync/connectors.zig's (nomadfs, folder, ...); a
+//! location left out is the backend's default (NomadFS: ~/.nomadfs).
 //!
 //! The passphrase is asked on the terminal without echo (twice for
 //! setup); without a terminal, it's the first line of stdin.
@@ -15,7 +18,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sync = @import("sync.zig");
 
-const Sub = enum { status, setup, join, now, stop };
+const Sub = enum { status, setup, join, now, stop, backends };
 
 /// Runs `locket sync <args>`; the exit code.
 pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: anytype, args: []const []const u8) !u8 {
@@ -23,6 +26,10 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: any
     const sub = std.meta.stringToEnum(Sub, args[0]) orelse return error.Usage;
     switch (sub) {
         .status => return status(io, arena, data_path),
+        .backends => {
+            for (sync.connectors.kinds) |k| say(io, "{s:<9} {s}\n          location: {s}\n", .{ k.id, k.summary, k.location_hint });
+            return 0;
+        },
         .now => {
             const report = try sync.syncIfShared(io, arena, data_path) orelse return error.NotConfigured;
             say(io, "locket: {s}\n", .{sync.summary(report)});
@@ -36,19 +43,19 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: any
         .setup, .join => {
             if (args.len < 2 or args.len > 3) return error.Usage;
             const kind = sync.connectors.find(args[1]) orelse return error.UnknownConnector;
-            const path = if (args.len == 3)
+            const location = if (args.len == 3)
                 args[2]
             else
-                try sync.connectors.defaultPath(kind.id, env, arena) orelse return error.Usage;
+                try sync.connectors.defaultLocation(kind.id, sync.connectors.homeDir(env), arena) orelse return error.Usage;
             const passphrase = try readPassphrase(io, arena, sub == .setup);
             defer std.crypto.secureZero(u8, passphrase);
-            say(io, "locket: {s} the vault in {s} at {s}…\n", .{ if (sub == .setup) "sharing" else "joining", kind.label, path });
+            say(io, "locket: {s} the vault through {s} ({s})…\n", .{ if (sub == .setup) "sharing" else "joining", kind.label, location });
             const report = if (sub == .setup)
-                try sync.setup(io, arena, data_path, kind.id, path, passphrase)
+                try sync.setup(io, arena, data_path, kind.id, location, passphrase)
             else
-                try sync.join(io, arena, data_path, kind.id, path, passphrase);
+                try sync.join(io, arena, data_path, kind.id, location, passphrase);
             say(io, "locket: {s}\n", .{sync.summary(report)});
-            if (sub == .setup) say(io, "locket: on your other machines: locket sync join {s}{s}{s}\n", .{ kind.id, if (args.len == 3) " " else "", if (args.len == 3) path else "" });
+            if (sub == .setup) say(io, "locket: on your other machines: locket sync join {s}{s}{s}\n", .{ kind.id, if (args.len == 3) " " else "", if (args.len == 3) location else "" });
             return 0;
         },
     }

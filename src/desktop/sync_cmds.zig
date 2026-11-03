@@ -26,7 +26,7 @@ pub const Result = struct {
 pub const Info = struct {
     shared: bool,
     connector: []const u8 = "",
-    path: []const u8 = "",
+    location: []const u8 = "",
     /// "NomadFS swarm folder at ..." when shared.
     where: []const u8 = "",
     /// The last sync, when there was one.
@@ -43,8 +43,8 @@ pub const Probe = struct {
     message: []const u8 = "",
 };
 
-pub const Target = struct { kind: []const u8, path: []const u8 };
-pub const Credentials = struct { kind: []const u8, path: []const u8, passphrase: []const u8 };
+pub const Target = struct { kind: []const u8, location: []const u8 };
+pub const Credentials = struct { kind: []const u8, location: []const u8, passphrase: []const u8 };
 
 pub const Commands = struct {
     pub const async_commands = .{ "sync_info", "sync_now", "sync_probe", "sync_setup", "sync_join", "sync_stop" };
@@ -54,9 +54,9 @@ pub const Commands = struct {
         var info: Info = .{ .shared = cfg.sync != null, .device = cfg.device };
         if (cfg.sync) |s| {
             info.connector = s.connector;
-            info.path = s.path;
-            const c = sync.connectors.make(arena, s.connector, s.path) catch null;
-            info.where = if (c) |x| x.describe(arena) catch s.path else s.path;
+            info.location = s.location;
+            const c = sync.connectors.make(arena, s.connector, s.location) catch null;
+            info.where = if (c) |x| x.describe(arena) catch s.location else s.location;
         }
         if (sync.loadStatus(st.io, arena, st.data_path)) |status| {
             info.last_t = status.t;
@@ -76,7 +76,7 @@ pub const Commands = struct {
 
     /// Whether there is a shared vault at a place (before setup or join).
     pub fn sync_probe(arena: std.mem.Allocator, args: Target) !Probe {
-        const shared = sync.isShared(st.io, arena, args.kind, args.path) catch |err| {
+        const shared = sync.isShared(st.io, arena, args.kind, args.location) catch |err| {
             return .{ .state = "unavailable", .message = sync.describe(err) orelse @errorName(err) };
         };
         return .{ .state = if (shared) "shared" else "empty" };
@@ -85,14 +85,14 @@ pub const Commands = struct {
     pub fn sync_setup(arena: std.mem.Allocator, args: Credentials) !Result {
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
-        const r = sync.setup(st.io, arena, st.data_path, args.kind, args.path, args.passphrase) catch |err| return fail(err);
+        const r = sync.setup(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
         return .{ .pulled = r.pulled, .pushed = r.pushed, .copies = r.copies };
     }
 
     pub fn sync_join(arena: std.mem.Allocator, args: Credentials) !Result {
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
-        const r = sync.join(st.io, arena, st.data_path, args.kind, args.path, args.passphrase) catch |err| return fail(err);
+        const r = sync.join(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
         return .{ .pulled = r.pulled, .pushed = r.pushed, .copies = r.copies };
     }
 

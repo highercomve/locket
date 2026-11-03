@@ -25,7 +25,9 @@ const store = @import("../store.zig");
 const config = @import("../config.zig");
 const keywrap = @import("keywrap.zig");
 const connectors = @import("connectors.zig");
-const Connector = @import("connector.zig").Connector;
+const connector_mod = @import("connector.zig");
+const Connector = connector_mod.Connector;
+const Expect = connector_mod.Expect;
 
 pub const shared_vault = "vault.enc";
 const status_file = "sync-status.json";
@@ -50,7 +52,12 @@ pub const Status = struct {
 /// What the sync's errors mean, worded for people. Null for others.
 pub fn describe(err: anyerror) ?[]const u8 {
     return switch (err) {
-        error.NomadFsNotMounted => "NomadFS isn't mounted here: start NomadFS and turn on Mount devices, or check the swarm folder's path",
+        error.NomadFsNotRunning => "NomadFS isn't running here, or is too old to have its local API: start or update NomadFS, then sync again",
+        error.NomadFsNotSynced => "NomadFS hasn't synced with your other devices since it started: it'll be ready in a moment",
+        error.NomadFsUnavailable => "the shared vault's data isn't reachable right now (the devices that hold it are offline)",
+        error.NomadFsNoSwarm => "this NomadFS has no swarm folder, or its API answered something else",
+        error.NomadFsBadAnswer => "NomadFS answered something Locket doesn't understand (update NomadFS?)",
+        error.NomadFsTooLarge => "the vault is larger than NomadFS takes (8 MiB)",
         error.FolderMissing => "the sync folder doesn't exist (an unmounted share?)",
         error.FolderNotAbsolute => "the sync folder must be an absolute path",
         error.NotShared => "there's no shared vault there yet: set one up from a machine that has your secrets",
@@ -70,7 +77,7 @@ pub fn describe(err: anyerror) ?[]const u8 {
 pub fn configured(io: std.Io, arena: std.mem.Allocator, data_path: []const u8) !?Connector {
     const cfg = try config.load(io, arena, data_path);
     const s = cfg.sync orelse return null;
-    return try connectors.make(arena, s.connector, s.path);
+    return try connectors.make(arena, s.connector, s.location);
 }
 
 /// Syncs when the vault is shared, recording how it went; null when it
@@ -107,64 +114,108 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    try c.check(io);
+    try c.check(io, a);
     if (try c.readOptional(io, a, keywrap.file) == null) return error.NotShared;
 
     var round: usize = 0;
     while (round < max_rounds) : (round += 1) {
-        // 1. The shared vault and the conflict copies, without the lock.
-        const main = try c.readOptional(io, a, shared_vault);
-        var copy_names: std.ArrayListUnmanaged([]const u8) = .empty;
-        var copy_data: std.ArrayListUnmanaged([]const u8) = .empty;
-        for (try c.list(io, a)) |name| {
-            if (!c.isCopyOf(name, shared_vault)) continue;
-            const data = try c.readOptional(io, a, name) orelse continue;
-            try copy_names.append(a, name);
-            try copy_data.append(a, data);
+        const remote = try fetch(io, a, c);
+        const merged = try mergeLocal(io, a, data_path, remote);
+        const sealed = merged.push orelse return merged.report;
+        if (!try push(io, a, c, remote, sealed)) continue; // written meanwhile: again
+        for (merged.copies) |cp| {
+            // A copy edited again since it was read stays for the next sync.
+            c.remove(io, a, cp.name, expectOf(cp.version)) catch {};
         }
-
-        // 2. Merge into the local vault, under its lock.
-        var report: Report = .{};
-        var push: ?[]u8 = null;
-        var merged_copies: std.ArrayListUnmanaged([]const u8) = .empty;
-        {
-            var v = try vault.open(io, a, data_path, .write);
-            defer v.close();
-            var merged = v.store;
-            var main_digest: ?[32]u8 = null;
-            if (main) |m| {
-                const remote = vault.unseal(a, v.key, m) catch |e| return if (e == error.CorruptVault) error.KeyMismatch else e;
-                main_digest = try store.digest(a, &remote);
-                merged = try store.merge(a, &merged, &remote);
-            }
-            for (copy_data.items, copy_names.items) |data, name| {
-                // A copy this key can't open isn't ours to merge: it stays,
-                // and so do its edits (it's never removed below).
-                const copy = vault.unseal(a, v.key, data) catch continue;
-                merged = try store.merge(a, &merged, &copy);
-                try merged_copies.append(a, name);
-            }
-            const merged_digest = try store.digest(a, &merged);
-            if (!std.mem.eql(u8, &merged_digest, &(try store.digest(a, &v.store)))) {
-                v.replaceStore(merged);
-                try v.save();
-                report.pulled = true;
-            }
-            const same = if (main_digest) |d| std.mem.eql(u8, &d, &merged_digest) else false;
-            if (!same or merged_copies.items.len > 0) push = try vault.seal(a, io, v.key, &v.store);
-        }
-
-        // 3. Share the merge, unless someone wrote meanwhile.
-        const sealed = push orelse return report;
-        const now = try c.readOptional(io, a, shared_vault);
-        if (!sameBytes(now, main)) continue;
-        try c.write(io, a, shared_vault, sealed);
-        for (merged_copies.items) |name| c.remove(io, a, name) catch {};
+        var report = merged.report;
         report.pushed = true;
-        report.copies = merged_copies.items.len;
+        report.copies = merged.copies.len;
         return report;
     }
     return error.SyncBusy;
+}
+
+/// A file of the shared area, as read.
+const Copy = struct { name: []const u8, data: []const u8, version: ?[]const u8 };
+
+/// The shared vault and the conflict copies, as one sync round read them.
+const Remote = struct {
+    main: ?Copy,
+    copies: []const Copy,
+};
+
+/// 1. Reads the shared vault and its conflict copies (no lock held).
+fn fetch(io: std.Io, a: std.mem.Allocator, c: Connector) !Remote {
+    const main: ?Copy = if (try c.readOptional(io, a, shared_vault)) |o| .{ .name = shared_vault, .data = o.data, .version = o.version } else null;
+    var copies: std.ArrayListUnmanaged(Copy) = .empty;
+    for (try c.list(io, a)) |name| {
+        if (!c.isCopyOf(name, shared_vault)) continue;
+        const obj = try c.readOptional(io, a, name) orelse continue;
+        try copies.append(a, .{ .name = name, .data = obj.data, .version = obj.version });
+    }
+    return .{ .main = main, .copies = copies.items };
+}
+
+const Merged = struct {
+    report: Report = .{},
+    /// The merge, sealed, when the shared vault isn't it yet.
+    push: ?[]u8 = null,
+    /// The conflict copies merged (and so to remove once pushed).
+    copies: []const Copy = &.{},
+};
+
+/// 2. Merges the remote copies into the local vault, under its lock.
+fn mergeLocal(io: std.Io, a: std.mem.Allocator, data_path: []const u8, remote: Remote) !Merged {
+    var v = try vault.open(io, a, data_path, .write);
+    defer v.close();
+    var out: Merged = .{};
+    var merged = v.store;
+    var main_digest: ?[32]u8 = null;
+    if (remote.main) |m| {
+        const s = vault.unseal(a, v.key, m.data) catch |e| return if (e == error.CorruptVault) error.KeyMismatch else e;
+        main_digest = try store.digest(a, &s);
+        merged = try store.merge(a, &merged, &s);
+    }
+    var copies: std.ArrayListUnmanaged(Copy) = .empty;
+    for (remote.copies) |cp| {
+        // A copy this key can't open isn't ours to merge: it stays, and so
+        // do its edits (it's never removed).
+        const s = vault.unseal(a, v.key, cp.data) catch continue;
+        merged = try store.merge(a, &merged, &s);
+        try copies.append(a, cp);
+    }
+    out.copies = copies.items;
+    const merged_digest = try store.digest(a, &merged);
+    if (!std.mem.eql(u8, &merged_digest, &(try store.digest(a, &v.store)))) {
+        v.replaceStore(merged);
+        try v.save();
+        out.report.pulled = true;
+    }
+    const same = if (main_digest) |d| std.mem.eql(u8, &d, &merged_digest) else false;
+    if (!same or out.copies.len > 0) out.push = try vault.seal(a, io, v.key, &v.store);
+    return out;
+}
+
+/// 3. Writes the merge over the shared vault the round read; false when
+/// someone wrote it meanwhile (a versioned backend checks atomically, a
+/// plain folder by a re-read).
+fn push(io: std.Io, a: std.mem.Allocator, c: Connector, remote: Remote, sealed: []const u8) !bool {
+    if (c.versioned()) {
+        const expect: Expect = if (remote.main) |m| expectOf(m.version) else .absent;
+        c.write(io, a, shared_vault, sealed, expect) catch |e| switch (e) {
+            error.Changed => return false,
+            else => return e,
+        };
+        return true;
+    }
+    const now = try c.readOptional(io, a, shared_vault);
+    if (!sameBytes(if (now) |o| o.data else null, if (remote.main) |m| m.data else null)) return false;
+    try c.write(io, a, shared_vault, sealed, .any);
+    return true;
+}
+
+fn expectOf(version: ?[]const u8) Expect {
+    return if (version) |ver| .{ .version = ver } else .any;
 }
 
 fn sameBytes(x: ?[]const u8, y: ?[]const u8) bool {
@@ -175,20 +226,21 @@ fn sameBytes(x: ?[]const u8, y: ?[]const u8) bool {
 /// Shares this machine's vault at `path` through connector `kind`: the
 /// vault key, wrapped with `passphrase`, and the vault. The first machine
 /// does this; the others `join`.
-pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, path: []const u8, passphrase: []const u8) !Report {
+pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, location: []const u8, passphrase: []const u8) !Report {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    const c = try connectors.make(a, kind, path);
-    try c.check(io);
+    const c = try connectors.make(a, kind, location);
+    try c.check(io, a);
     if (passphrase.len < keywrap.min_passphrase) return error.WeakPassphrase;
     if (try c.readOptional(io, a, keywrap.file) != null) return error.AlreadyShared;
     {
         var v = try vault.open(io, a, data_path, .write);
         defer v.close();
         const wrapped = try keywrap.wrap(io, a, v.key, passphrase, wrap_params);
-        try c.write(io, a, keywrap.file, wrapped);
-        try saveSync(io, a, data_path, kind, path);
+        // Only where none is: two machines setting up at once can't both win.
+        c.write(io, a, keywrap.file, wrapped, .absent) catch |e| return if (e == error.Changed) error.AlreadyShared else e;
+        try saveSync(io, a, data_path, kind, location);
     }
     return syncRecorded(io, gpa, data_path, c);
 }
@@ -196,16 +248,16 @@ pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []
 /// Joins the vault shared at `path`: unwraps its key with `passphrase`,
 /// merges this machine's vault into the shared one, and keeps the shared
 /// key from now on (re-sealing the local vault with it).
-pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, path: []const u8, passphrase: []const u8) !Report {
+pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []const u8, location: []const u8, passphrase: []const u8) !Report {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
-    const c = try connectors.make(a, kind, path);
-    try c.check(io);
+    const c = try connectors.make(a, kind, location);
+    try c.check(io, a);
     const wrapped = try c.readOptional(io, a, keywrap.file) orelse return error.NotShared;
-    var key = try keywrap.unwrap(io, a, wrapped, passphrase);
+    var key = try keywrap.unwrap(io, a, wrapped.data, passphrase);
     defer std.crypto.secureZero(u8, &key);
-    const main = try c.readOptional(io, a, shared_vault);
+    const main: ?[]const u8 = if (try c.readOptional(io, a, shared_vault)) |o| o.data else null;
     {
         var v = try vault.open(io, a, data_path, .write);
         defer v.close();
@@ -216,7 +268,7 @@ pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []c
             }
             try v.rekey(key);
         }
-        try saveSync(io, a, data_path, kind, path);
+        try saveSync(io, a, data_path, kind, location);
     }
     return syncRecorded(io, gpa, data_path, c);
 }
@@ -235,21 +287,21 @@ pub fn stop(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8) !void {
     try config.save(io, a, data_path, cfg);
 }
 
-/// Whether there is a shared vault at `path` (key.json is there).
-pub fn isShared(io: std.Io, gpa: std.mem.Allocator, kind: []const u8, path: []const u8) !bool {
+/// Whether there is a shared vault at `location` (key.json is there).
+pub fn isShared(io: std.Io, gpa: std.mem.Allocator, kind: []const u8, location: []const u8) !bool {
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
-    const c = try connectors.make(arena.allocator(), kind, path);
-    try c.check(io);
+    const c = try connectors.make(arena.allocator(), kind, location);
+    try c.check(io, arena.allocator());
     return try c.readOptional(io, arena.allocator(), keywrap.file) != null;
 }
 
 /// The Argon2id cost of new wraps (tests lower it).
 var wrap_params = keywrap.default_params;
 
-fn saveSync(io: std.Io, a: std.mem.Allocator, data_path: []const u8, kind: []const u8, path: []const u8) !void {
+fn saveSync(io: std.Io, a: std.mem.Allocator, data_path: []const u8, kind: []const u8, location: []const u8) !void {
     var cfg = try config.load(io, a, data_path);
-    cfg.sync = .{ .connector = kind, .path = path };
+    cfg.sync = .{ .connector = kind, .location = location };
     try config.save(io, a, data_path, cfg);
 }
 
@@ -393,7 +445,7 @@ test "conflict copies the backend made are merged and removed" {
         var v = try vault.open(io, al, w.b, .read);
         defer v.close();
         key = v.key;
-        try c.write(io, al, "vault (conflict from b).enc", try vault.seal(al, io, key, &v.store));
+        try c.write(io, al, "vault (conflict from b).enc", try vault.seal(al, io, key, &v.store), .any);
     }
     _ = (try syncIfShared(io, g, w.a)).?;
     try testing.expectEqualStrings("b", (try w.get(w.a, "hub", "default", "FROM_B")).?);
@@ -413,7 +465,7 @@ test "a conflict copy this key can't open is left alone, not deleted" {
     const c = try w.connector();
     const foreign: [vault.key_len]u8 = @splat(3);
     var s: store.Store = .{};
-    try c.write(io, al, "vault (conflict from x).enc", try vault.seal(al, io, foreign, &s));
+    try c.write(io, al, "vault (conflict from x).enc", try vault.seal(al, io, foreign, &s), .any);
     try w.set(w.a, "hub", "default", "B", "2"); // something to push
     const r = (try syncIfShared(io, g, w.a)).?;
     try testing.expectEqual(@as(usize, 0), r.copies);

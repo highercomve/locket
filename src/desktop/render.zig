@@ -154,7 +154,7 @@ fn renderSecrets(e: *ui.Engine, ws: *const vault.Workspace) !void {
 }
 
 /// Mounts (or updates) row `i` of a list based at `rows`; its base id.
-fn mountRow(comptime View: type, e: *ui.Engine, rows: i64, styles: i64, i: usize, bindings: []const ui.Binding) !i64 {
+pub fn mountRow(comptime View: type, e: *ui.Engine, rows: i64, styles: i64, i: usize, bindings: []const ui.Binding) !i64 {
     const base = rows + @as(i64, @intCast(i)) * st.row_stride;
     if (e.tree.get(base) == null) {
         _ = try View.mount(&e.tree, base, styles, bindings);
@@ -163,7 +163,7 @@ fn mountRow(comptime View: type, e: *ui.Engine, rows: i64, styles: i64, i: usize
 }
 
 /// Makes `ids` the list's rows; rows past them are destroyed.
-fn stamp(e: *ui.Engine, list: i64, ids: []const i64) !void {
+pub fn stamp(e: *ui.Engine, list: i64, ids: []const i64) !void {
     if (!try e.tree.stampKids(list, ids)) return error.InvalidTemplate;
 }
 

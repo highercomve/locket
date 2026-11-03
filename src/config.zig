@@ -1,7 +1,7 @@
 //! `<data>/config.json`: this machine's settings, none of them secret.
 //!
 //!     { "device": "<16 hex digits>",
-//!       "sync": { "connector": "nomadfs", "path": "/home/me/NomadFS/Swarm" } }
+//!       "sync": { "connector": "nomadfs", "location": "/home/me/.nomadfs" } }
 //!
 //! `device` identifies this machine in the vault's stamps (store.zig); it
 //! is made once, at random. `sync` is the connector the vault is shared
@@ -16,10 +16,11 @@ const builtin = @import("builtin");
 pub const file = "config.json";
 
 pub const Sync = struct {
-    /// A connector's id (sync/connectors.zig): "nomadfs" or "folder".
+    /// A backend's id (sync/connectors.zig): "nomadfs", "folder"...
     connector: []const u8,
-    /// The folder the shared vault lives under (`<path>/locket/`).
-    path: []const u8,
+    /// Where, as that backend reads it: a folder, NomadFS's device folder,
+    /// later a bucket or a database URL.
+    location: []const u8,
 };
 
 pub const Config = struct {
@@ -83,9 +84,9 @@ test "config round-trips, and a missing file is the defaults" {
 
     var buf: [16]u8 = undefined;
     const dev = newDevice(io, &buf);
-    try save(io, testing.allocator, dir, .{ .device = dev, .sync = .{ .connector = "nomadfs", .path = "/m/Swarm" } });
+    try save(io, testing.allocator, dir, .{ .device = dev, .sync = .{ .connector = "nomadfs", .location = "/m/.nomadfs" } });
     const back = try load(io, a, dir);
     try testing.expectEqualStrings("nomadfs", back.sync.?.connector);
-    try testing.expectEqualStrings("/m/Swarm", back.sync.?.path);
+    try testing.expectEqualStrings("/m/.nomadfs", back.sync.?.location);
     try testing.expect(back.deviceId() != 0);
 }
