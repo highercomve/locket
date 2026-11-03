@@ -13,8 +13,8 @@
             .hash = "oriel-0.20.11-K1NO5Xdp_gAF95uPNyoF2L7S1_U14s-PBt9x8zth6DcH",
         },
         .zigatlas = .{
-            .url = "git+https://github.com/highercomve/zigatlas#cdc7a116886946fb399bb3937497eb7519d5927f",
-            .hash = "zigatlas-0.1.0-zbV5qzaiAgCJtloEGjUzhQbkQPCetuwYa1Cc-MvrgGlH",
+            .url = "git+https://github.com/highercomve/zigatlas#af5135c45d58a7aaa4c59bb41060b94a4ca13908",
+            .hash = "zigatlas-0.1.0-zbV5q2eiAgCzbPF3gAYuQnqLAUH8RnSWCzWIuPz5nT9E",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "docs", "README.md", "CHANGELOG.md", "LICENSE", "icon.png" },
