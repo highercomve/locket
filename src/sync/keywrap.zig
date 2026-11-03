@@ -84,6 +84,7 @@ pub fn unwrap(io: std.Io, gpa: std.mem.Allocator, text: []const u8, passphrase: 
     const parsed = std.json.parseFromSlice(Doc, gpa, text, .{ .ignore_unknown_fields = true }) catch return error.CorruptKeyFile;
     defer parsed.deinit();
     const doc = parsed.value;
+    if (doc.version > 1) return error.NewerKeyFile;
     if (doc.version != 1 or !std.mem.eql(u8, doc.kdf, "argon2id")) return error.CorruptKeyFile;
     // Bounds, so a planted key.json can't make every machine burn
     // gigabytes or minutes (m is in KiB: 8 MiB to 256 MiB).

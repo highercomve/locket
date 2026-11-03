@@ -69,8 +69,10 @@ pub fn describe(err: anyerror) ?[]const u8 {
         error.WrongPassphrase => "that passphrase doesn't open the shared vault",
         error.WeakPassphrase => "the passphrase must be at least 8 characters",
         error.CorruptKeyFile => "the shared key file (key.json) is damaged",
+        error.NewerKeyFile => "the shared key file (key.json) was written by a newer Locket: update Locket",
         error.KeyMismatch => "this machine's key doesn't open the shared vault: join it again with the passphrase",
         error.CorruptSharedVault => "the shared vault opens with this key but is damaged (or from a newer Locket): this machine's vault is untouched",
+        error.NewerSharedVault => "another machine shares the vault from a newer Locket: update Locket here (this machine's vault is untouched)",
         error.SharedVaultWithoutKey => "there's a shared vault there without its key file (key.json): wait for it to sync, or remove that locket folder to start over",
         error.ObjectTooLarge => "a file in the shared area is larger than Locket reads (8 MiB)",
         error.FolderAreaNotDirectory => "the sync folder's locket entry isn't a directory (a link?): Locket won't follow it",
@@ -232,6 +234,7 @@ fn sharedError(err: anyerror) anyerror {
     return switch (err) {
         error.WrongKey => error.KeyMismatch,
         error.CorruptVault => error.CorruptSharedVault,
+        error.NewerVault => error.NewerSharedVault,
         else => err,
     };
 }

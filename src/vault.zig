@@ -479,6 +479,7 @@ pub fn describeError(err: anyerror) ?[]const u8 {
         error.InvalidUtf8 => "text must be valid UTF-8",
         error.CorruptVault => "the vault can't be decrypted (wrong key or damaged file)",
         error.InsecureKey => "master.key is readable by other users: chmod 600 it",
+        error.NewerVault => "the vault was written by a newer Locket: update Locket (both the app and the locket command)",
         else => null,
     };
 }

@@ -380,7 +380,9 @@ pub fn unmarshal(gpa: std.mem.Allocator, plain: []const u8) !Store {
         .integer => |i| i,
         else => return error.CorruptVault,
     };
-    if (ver < 1 or ver > version) return error.CorruptVault;
+    if (ver < 1) return error.CorruptVault;
+    // A newer Locket wrote it: say so, not "damaged".
+    if (ver > version) return error.NewerVault;
     const projects = root.object.get("projects") orelse return error.CorruptVault;
     if (projects != .object) return error.CorruptVault;
 
@@ -645,7 +647,8 @@ test "json: v3 round-trips stamps and tombstones; v1 and v2 open with zero stamp
         \\{"version":2,"projects":{"hub":{"description":"","workspaces":{"stage":{"secrets":{"K":"s"}}}}}}
     );
     try testing.expectEqualStrings("s", v2.projects.get("hub").?.workspaces.get("stage").?.secrets.get("K").?.value);
-    try testing.expectError(error.CorruptVault, unmarshal(a, "{\"version\":9,\"projects\":{}}"));
+    try testing.expectError(error.NewerVault, unmarshal(a, "{\"version\":9,\"projects\":{}}"));
+    try testing.expectError(error.CorruptVault, unmarshal(a, "{\"version\":0,\"projects\":{}}"));
     // The end of time, a name a path can't hold, a tombstone path too deep.
     try testing.expectError(error.CorruptVault, unmarshal(a,
         \\{"version":3,"projects":{"p":{"t":9223372036854775807,"d":"1","workspaces":{}}}}
