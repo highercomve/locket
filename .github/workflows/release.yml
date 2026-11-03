@@ -154,6 +154,9 @@ jobs:
         run: bash scripts/smoke.sh dist/locket-$V-x86_64-windows.exe
       - name: App (setup.exe)
         run: |
+          # The install step puts zig-out/bin/locket-app.exe in place (the
+          # same build the installer packs); package makes the setup.exe.
+          zig build -Doptimize=ReleaseSafe
           zig build package -Doptimize=ReleaseSafe
           cp "$(find zig-out/package -maxdepth 1 -name '*-setup.exe' | head -1)" "dist/Locket-$V-setup.exe"
           # The installed app's update payload: the exe the installer puts in place.

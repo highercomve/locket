@@ -47,6 +47,22 @@ line (`locket`) and a desktop app (`locket-app`) on one shared core.
     window clears a field
 - Name rules: 1–128 bytes, no spaces, `/` or control characters; no `=`
   in variable names.
+- **Updates**: `locket update [--check] [--yes]` and the app's update
+  button install the latest release after checking its Ed25519-signed
+  manifest and the file's SHA-256 (Oriel's updater). `locket --version`
+  and the app show the version, which lives only in `build.zig.zon`.
+- **Linux, macOS and Windows**: the vault lives in
+  `~/.local/share/locket`, `~/Library/Application Support/locket` or
+  `%APPDATA%\locket` (`$LOCKET_HOME` overrides it). Releases ship the
+  AppImage, deb and rpm, the macOS `.dmg`, the Windows `setup.exe`, and
+  the CLI for x86_64/aarch64 Linux, macOS and x86_64 Windows; the deb and
+  rpm include the CLI as `/usr/bin/locket`.
+- **Release CI** (`.github/workflows/release.yml`): a `v*` tag tests and
+  builds every platform, signs `latest.json` and `latest-cli.json`, and
+  publishes the release. `scripts/release.sh X.Y.Z` bumps, tests and
+  tags; `scripts/smoke.sh` checks a built CLI.
+- The site, [locket.foreachdeveloper.com](https://locket.foreachdeveloper.com),
+  built with Zine and deployed to Cloudflare Pages.
 - `scripts/install-local.sh`: builds both programs and installs them for
   the user (`~/.local/bin/locket`, `~/.local/bin/locket-app` as an
   AppImage, the launcher entry and icons), replacing a running app.

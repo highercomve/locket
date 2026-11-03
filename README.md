@@ -34,11 +34,12 @@ Two programs share one core and one vault file:
   [Oriel](https://github.com/highercomve/Oriel)'s renderer: compiled
   `.oriel` views driven from Zig, no web view, no JavaScript.
 
-Both are written in Zig 0.16. Locket runs on Linux today.
+Both are written in Zig 0.16, for Linux, macOS and Windows, and both
+update themselves from the GitHub releases.
 
 ## Contents
 
-- [Install](#install)
+- [Install](#install): [download](#download), [updates](#updates), [from source](#from-source)
 - [Projects, workspaces, variables](#projects-workspaces-variables)
 - [The command line](#the-command-line)
 - [The desktop app](#the-desktop-app)
@@ -49,9 +50,45 @@ Both are written in Zig 0.16. Locket runs on Linux today.
 
 ## Install
 
+### Download
+
+Every [release](https://github.com/highercomve/locket/releases/latest)
+has the app and the command line for each platform, with a `SHA256SUMS`
+file:
+
+| Platform | The app | The command line |
+|---|---|---|
+| Linux x86_64 | `locket-app-<version>-x86_64.AppImage` (updates itself), or the `.deb` / `.rpm` (both include `locket`) | `locket-<version>-x86_64-linux` (static) |
+| Linux aarch64 | | `locket-<version>-aarch64-linux` (static) |
+| macOS (Apple silicon) | `Locket-<version>-macos-arm64.dmg` | `locket-<version>-aarch64-macos`, `-x86_64-macos` |
+| Windows x86_64 | `Locket-<version>-setup.exe` (per user, no admin) | `locket-<version>-x86_64-windows.exe` |
+
+Put the command line on your `PATH` as `locket` (for example
+`~/.local/bin/locket`, `chmod +x` it). The builds aren't signed by Apple
+or Microsoft yet: on macOS, open the app the first time with right-click
+→ **Open**; on Windows, SmartScreen asks once (**More info** → **Run
+anyway**).
+
+### Updates
+
+```sh
+locket --version        # locket 0.1.0 (<commit>)
+locket update --check   # is there a newer release?
+locket update           # download, verify and install it
+```
+
+The app checks when it starts: when a newer release is out, an **Update
+to …** button appears next to its version; it installs the update, then
+**Restart to update** runs it. Every update is checked against an
+Ed25519 signature built into Locket and the file's SHA-256 before
+anything is replaced. A deb or rpm install is updated by your package
+manager instead.
+
+### From source
+
 You need [Zig 0.16](https://ziglang.org/download/) and, for the desktop
-app, the GTK 4 development files (`gtk4` on Arch, `libgtk-4-dev` on
-Debian and Ubuntu, `gtk4-devel` on Fedora).
+app on Linux, the GTK 4 development files (`gtk4` on Arch,
+`libgtk-4-dev` on Debian and Ubuntu, `gtk4-devel` on Fedora).
 
 ```sh
 git clone https://github.com/highercomve/locket
@@ -59,7 +96,8 @@ cd locket
 scripts/install-local.sh
 ```
 
-That builds both programs (ReleaseSafe) and installs them for your user:
+On Linux that builds both programs (ReleaseSafe) and installs them for
+your user:
 
 | Path | What |
 |---|---|
@@ -69,7 +107,7 @@ That builds both programs (ReleaseSafe) and installs them for your user:
 | `~/.local/share/icons/hicolor/*/apps/com.foreachdeveloper.locket.png` | its icons |
 
 It stops a running `locket-app`, replaces it and starts the new one. Run
-it again to update. Options:
+it again to update from your checkout. Options:
 
 ```sh
 NO_RESTART=1 scripts/install-local.sh   # leave the app stopped
@@ -230,7 +268,13 @@ is meant to close that gap by offering `run` without `get`.
 
 ## On disk
 
-`$XDG_DATA_HOME/locket` (default `~/.local/share/locket`):
+| Platform | The vault's directory |
+|---|---|
+| Linux | `$XDG_DATA_HOME/locket` (default `~/.local/share/locket`) |
+| macOS | `~/Library/Application Support/locket` |
+| Windows | `%APPDATA%\locket` |
+| any | `$LOCKET_HOME`, when set |
+
 
 ```
 master.key   32 random bytes, mode 0600: the vault's key
@@ -253,10 +297,28 @@ lock         empty; held while a process reads or writes the vault
 zig build                # zig-out/bin/locket (CLI) + zig-out/bin/locket-app
 zig build run            # run locket-app
 zig build cli -- ls      # run the CLI
-zig build test           # unit tests: vault core, CLI, input decoding
+zig build test           # unit tests: vault core, CLI, updates, input decoding
 zig build atlas          # code map in zig-out/atlas/ (zigatlas)
-zig build package        # deb, rpm and AppImage in zig-out/package/
+zig build package        # this OS's packages in zig-out/package/
+zig build -Dapp=false    # only the CLI (cross-compiles: -Dtarget=x86_64-windows)
+scripts/smoke.sh zig-out/bin/locket   # the CLI against a throwaway vault
 ```
+
+### Versions and releases
+
+The version lives in one place, `build.zig.zon`; `locket --version`, the
+window, the packages and the update manifests all read it. To release:
+
+```sh
+# 1. add "## 0.2.0 - <date>" to CHANGELOG.md, commit it
+scripts/release.sh 0.2.0 --push   # bump, test, commit, tag v0.2.0, push
+```
+
+The tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml):
+tests and builds on Linux, macOS and Windows, signs `latest.json` (the
+app) and `latest-cli.json` (the CLI) with the `LOCKET_UPDATE_KEY`
+secret, and publishes the release with notes from `CHANGELOG.md`. Run the
+workflow by hand to build every platform without publishing.
 
 [Oriel](https://github.com/highercomve/Oriel) and
 [zigatlas](https://github.com/highercomve/zigatlas) are pinned to commits
@@ -265,8 +327,10 @@ in `build.zig.zon`; `zig build` fetches them.
 ```
 src/vault.zig      the core: model, sealed storage, locking, address rules
 src/cli.zig        the CLI's commands
+src/update.zig     locket update; update_errors.zig: shared messages
 src/desktop/       the window: app.zig (events, actions), render.zig,
-                   state.zig, widgets.zig (Oriel helpers), input.zig
+                   state.zig, widgets.zig (Oriel helpers), input.zig,
+                   updates.zig + update_ui.zig (the update button)
 src/cli_main.zig   locket's entry point
 src/main.zig       locket-app's entry point
 src/views/*.oriel  the window's views
@@ -283,7 +347,7 @@ nothing about the vault is implemented twice.
 - An MCP server: vault tools for agents over stdio, serving a command's
   variables without ever returning values.
 - The OS keychain instead of `master.key`.
-- macOS and Windows builds (Oriel supports both).
+- Signed macOS and Windows builds (Apple notarization, Authenticode).
 
 ## License
 
