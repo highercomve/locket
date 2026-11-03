@@ -624,6 +624,8 @@ test dataDirFor {
     for (cases) |c| {
         const got = try dataDirFor(c.os, c.env, a);
         defer a.free(got);
+        // The host's separator joins the parts (`\\` on Windows).
+        std.mem.replaceScalar(u8, got, std.fs.path.sep, '/');
         try std.testing.expectEqualStrings(c.want, got);
     }
     try std.testing.expectError(error.NoDataDir, dataDirFor(.windows, Env{ .pairs = &.{} }, a));
