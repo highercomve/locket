@@ -1,0 +1,7 @@
+---
+.title = "Locket",
+.description = "Your agents' secrets, kept close.",
+.date = .date("2026-11-03T00:00:00"),
+.authors = ["Locket"],
+.layout = "home.shtml",
+---
