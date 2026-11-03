@@ -36,6 +36,10 @@ const max_rounds = 3;
 /// Conflict copies merged per round: the rest wait for the next sync (a
 /// shared folder full of "copies" can't exhaust memory).
 const max_copies = 16;
+/// Candidate copies read per round. Only the ones this key opens count
+/// toward max_copies, so files someone without the key planted can't
+/// crowd out real copies; this bounds the reading they cost.
+const max_copy_reads = 64;
 
 pub const Report = struct {
     /// The local vault took changes from the shared one.
@@ -61,6 +65,8 @@ pub fn describe(err: anyerror) ?[]const u8 {
         error.NomadFsUnavailable => "the shared vault's data isn't reachable right now (the devices that hold it are offline)",
         error.NomadFsNoSwarm => "this NomadFS has no swarm folder, or its API answered something else",
         error.NomadFsBadAnswer => "NomadFS answered something Locket doesn't understand (update NomadFS?)",
+        error.NomadFsTimeout => "NomadFS didn't answer in time: it may be busy fetching the vault from another device; try again",
+        error.NomadFsInsecureApiFile => "NomadFS's api.json is readable by other users or isn't a plain file: Locket won't trust it (restart NomadFS)",
         error.NomadFsTooLarge => "the vault is larger than NomadFS takes (8 MiB)",
         error.FolderMissing => "the sync folder doesn't exist (an unmounted share?)",
         error.FolderNotAbsolute => "the sync folder must be an absolute path",
@@ -130,10 +136,21 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
     try c.check(io, a);
     if (try c.readOptional(io, a, keywrap.file) == null) return error.NotShared;
 
+    // The key copies are checked with, before any is read (no lock held
+    // after: fetching never blocks the vault).
+    const key = blk: {
+        var v = try vault.open(io, a, data_path, .read);
+        defer v.close();
+        break :blk v.key;
+    };
+
     var round: usize = 0;
+    var pulled = false; // by an earlier round that then had to go again
     while (round < max_rounds) : (round += 1) {
-        const remote = try fetch(io, a, c);
-        const merged = try mergeLocal(io, a, data_path, remote);
+        const remote = try fetch(io, a, wiping.allocator(), c, key);
+        var merged = try mergeLocal(io, a, data_path, remote);
+        merged.report.pulled = merged.report.pulled or pulled;
+        pulled = merged.report.pulled;
         const sealed = merged.push orelse return merged.report;
         if (!try push(io, a, c, remote, sealed)) continue; // written meanwhile: again
         for (merged.copies) |cp| {
@@ -157,15 +174,29 @@ const Remote = struct {
     copies: []const Copy,
 };
 
-/// 1. Reads the shared vault and its conflict copies (no lock held).
-fn fetch(io: std.Io, a: std.mem.Allocator, c: Connector) !Remote {
+/// 1. Reads the shared vault and its conflict copies (no lock held): the
+/// copies `key` opens, up to max_copies, out of at most max_copy_reads
+/// read. A copy it can't open is skipped, not counted (and never removed).
+fn fetch(io: std.Io, a: std.mem.Allocator, scratch_gpa: std.mem.Allocator, c: Connector, key: [vault.key_len]u8) !Remote {
     const main: ?Copy = if (try c.readOptional(io, a, shared_vault)) |o| .{ .name = shared_vault, .data = o.data, .version = o.version } else null;
     var copies: std.ArrayListUnmanaged(Copy) = .empty;
+    var reads: usize = 0;
     for (try c.list(io, a)) |name| {
         if (!c.isCopyOf(name, shared_vault)) continue;
-        if (copies.items.len >= max_copies) break;
-        const obj = try c.readOptional(io, a, name) orelse continue;
-        try copies.append(a, .{ .name = name, .data = obj.data, .version = obj.version });
+        if (copies.items.len >= max_copies or reads >= max_copy_reads) break;
+        reads += 1;
+        // Each candidate in its own arena: one that doesn't open is gone
+        // (zeroed: scratch_gpa wipes) before the next is read.
+        var scratch = std.heap.ArenaAllocator.init(scratch_gpa);
+        defer scratch.deinit();
+        const s = scratch.allocator();
+        const obj = try c.readOptional(io, s, name) orelse continue;
+        _ = vault.unseal(s, key, obj.data) catch continue;
+        try copies.append(a, .{
+            .name = name,
+            .data = try a.dupe(u8, obj.data),
+            .version = if (obj.version) |ver| try a.dupe(u8, ver) else null,
+        });
     }
     return .{ .main = main, .copies = copies.items };
 }
@@ -578,4 +609,33 @@ test "a sync round merges a bounded number of conflict copies" {
     try testing.expectEqual(@as(usize, max_copies), first.copies);
     const second = try sync(io, g, w.a, c);
     try testing.expectEqual(@as(usize, 4), second.copies);
+}
+
+test "planted copies that don't open don't crowd out a real one" {
+    var w = try World.init();
+    defer w.deinit();
+    const io = testing.io;
+    const g = testing.allocator;
+    const al = w.arena.allocator();
+    try w.set(w.a, "hub", "default", "A", "1");
+    _ = try setup(io, g, w.a, "folder", w.shared, "a good passphrase");
+    _ = try join(io, g, w.b, "folder", w.shared, "a good passphrase");
+    const c = try w.connector();
+    // Someone without the key plants more junk "copies" than a round merges.
+    for (0..max_copies + 4) |i| {
+        try c.write(io, al, try std.fmt.allocPrint(al, "vault (conflict junk {d}).enc", .{i}), "x", .any);
+    }
+    // ...and b's real edit lands as a conflict copy too.
+    try w.set(w.b, "hub", "default", "FROM_B", "b");
+    {
+        var v = try vault.open(io, al, w.b, .read);
+        defer v.close();
+        try c.write(io, al, "vault (conflict from b).enc", try vault.seal(al, io, v.key, &v.store), .any);
+    }
+    const report = try sync(io, g, w.a, c);
+    try testing.expectEqual(@as(usize, 1), report.copies);
+    try testing.expectEqualStrings("b", (try w.get(w.a, "hub", "default", "FROM_B")).?);
+    // The junk stays (it isn't ours to remove); the real copy is gone.
+    try testing.expect(try c.readOptional(io, al, "vault (conflict junk 0).enc") != null);
+    try testing.expect(try c.readOptional(io, al, "vault (conflict from b).enc") == null);
 }

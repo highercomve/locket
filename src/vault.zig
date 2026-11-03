@@ -106,9 +106,12 @@ pub const Vault = struct {
         v.* = undefined;
     }
 
-    /// A stamp for a change made now: newer than everything in the vault.
+    /// A stamp for a change made now: newer than everything in the vault,
+    /// but never past store.max_t (a vault holding one is refused as
+    /// corrupt): at the bound, ties fall to the device tiebreak.
     pub fn stamp(v: *Vault) Stamp {
-        const t = if (v.clock_ms > v.high.t) v.clock_ms else v.high.t +| 1;
+        const next = if (v.clock_ms > v.high.t) v.clock_ms else v.high.t +| 1;
+        const t = @min(next, store.max_t);
         v.high = .{ .t = t, .d = v.device };
         return v.high;
     }
@@ -847,6 +850,9 @@ test "stamps only move forward, even behind a newer stamp from another machine" 
     try std.testing.expect(s1.newer(.{ .t = 5000, .d = 9 }));
     try std.testing.expect(s2.newer(s1));
     try std.testing.expectEqual(@as(u64, 1), s2.d);
+    // At the bound, a stamp stays at it: the vault stays readable.
+    v.high = .{ .t = store.max_t, .d = 9 };
+    try std.testing.expectEqual(store.max_t, v.stamp().t);
 }
 
 test "editing a secret removed meanwhile is NotFound, not a re-add" {
@@ -861,7 +867,7 @@ test "editing a secret removed meanwhile is NotFound, not a re-add" {
     try std.testing.expectError(error.InvalidVarName, v.setSecret("hub", default_workspace, "A=B", "x"));
 }
 
-test "seal and unseal; the wrong key is CorruptVault" {
+test "seal and unseal; the wrong key is WrongKey" {
     const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

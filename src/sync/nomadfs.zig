@@ -158,6 +158,9 @@ pub const NomadFs = struct {
         const addr = try std.Io.net.IpAddress.parse("127.0.0.1", ep.port);
         const stream = addr.connect(io, .{ .mode = .stream }) catch return error.NomadFsNotRunning;
         defer stream.close(io);
+        // A node that stalls can't hang every locket command (they all sync
+        // first) or the window's sync: each read and write waits this long.
+        setTimeouts(stream.socket.handle, timeout_ms) catch {};
 
         var wbuf: [4096]u8 = undefined;
         var writer = stream.writer(io, &wbuf);
@@ -176,6 +179,7 @@ pub const NomadFs = struct {
         var reader = stream.reader(io, &rbuf);
         const raw = reader.interface.allocRemaining(arena, .limited(max_response)) catch |e| switch (e) {
             error.StreamTooLong => return error.NomadFsBadAnswer,
+            error.ReadFailed => return if (reader.err) |re| (if (re == error.WouldBlock) error.NomadFsTimeout else error.NomadFsNotRunning) else error.NomadFsNotRunning,
             else => return error.NomadFsNotRunning,
         };
         return parseResponse(raw);
@@ -183,10 +187,20 @@ pub const NomadFs = struct {
 
     const Endpoint = struct { port: u16, base: []const u8 };
 
-    /// The running node's API, from `<dir>/api.json`.
+    /// The running node's API, from `<dir>/api.json`: a regular file only
+    /// this user can read (the node writes it 0600), so another user
+    /// can't plant one that sends the vault to their own server.
     fn endpoint(n: *NomadFs, io: std.Io, arena: std.mem.Allocator) !Endpoint {
         if (!std.fs.path.isAbsolute(n.dir)) return error.FolderNotAbsolute;
         const path = try std.fs.path.join(arena, &.{ n.dir, api_file });
+        const st = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |e| switch (e) {
+            error.FileNotFound => return error.NomadFsNotRunning,
+            else => return e,
+        };
+        if (st.kind != .file) return error.NomadFsInsecureApiFile;
+        if (comptime builtin.os.tag != .windows) {
+            if (st.permissions.toMode() & 0o077 != 0) return error.NomadFsInsecureApiFile;
+        }
         const text = std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(4096)) catch |e| switch (e) {
             error.FileNotFound => return error.NomadFsNotRunning,
             else => return e,
@@ -221,6 +235,30 @@ fn fileUrl(arena: std.mem.Allocator, name: []const u8) ![]const u8 {
     return out.written();
 }
 
+/// Bounds each blocking read and write on `handle` to `ms`.
+fn setTimeouts(handle: SocketHandle, ms: u32) !void {
+    if (builtin.os.tag == .windows) {
+        const ws = std.os.windows.ws2_32;
+        if (winsock.setsockopt(handle, ws.SOL.SOCKET, ws.SO.RCVTIMEO, std.mem.asBytes(&ms), @sizeOf(u32)) != 0) return error.Unexpected;
+        if (winsock.setsockopt(handle, ws.SOL.SOCKET, ws.SO.SNDTIMEO, std.mem.asBytes(&ms), @sizeOf(u32)) != 0) return error.Unexpected;
+        return;
+    }
+    const tv = std.posix.timeval{
+        .sec = @intCast(ms / std.time.ms_per_s),
+        .usec = @intCast((ms % std.time.ms_per_s) * std.time.us_per_ms),
+    };
+    try std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
+    try std.posix.setsockopt(handle, std.posix.SOL.SOCKET, std.posix.SO.SNDTIMEO, std.mem.asBytes(&tv));
+}
+
+const SocketHandle = @TypeOf(@as(std.Io.net.Socket, undefined).handle);
+
+const winsock = struct {
+    extern "ws2_32" fn setsockopt(s: SocketHandle, level: i32, optname: i32, optval: [*]const u8, optlen: i32) callconv(.winapi) i32;
+};
+
+/// The answer, all of it: a body shorter than its Content-Length (the
+/// node stopped mid-answer) is refused, not taken for a whole file.
 fn parseResponse(raw: []const u8) !NomadFs.Response {
     const end = std.mem.indexOf(u8, raw, "\r\n\r\n") orelse return error.NomadFsBadAnswer;
     var lines = std.mem.splitSequence(u8, raw[0..end], "\r\n");
@@ -232,6 +270,11 @@ fn parseResponse(raw: []const u8) !NomadFs.Response {
         const value = std.mem.trim(u8, line[colon + 1 ..], " ");
         if (std.ascii.eqlIgnoreCase(line[0..colon], "etag")) r.etag = value;
         if (std.ascii.eqlIgnoreCase(line[0..colon], "x-nomadfs-error")) r.err = value;
+        if (std.ascii.eqlIgnoreCase(line[0..colon], "content-length")) {
+            const want = std.fmt.parseInt(usize, value, 10) catch return error.NomadFsBadAnswer;
+            if (want != r.body.len) return error.NomadFsBadAnswer;
+        }
+        if (std.ascii.eqlIgnoreCase(line[0..colon], "transfer-encoding")) return error.NomadFsBadAnswer; // the node never chunks
     }
     return r;
 }
@@ -269,6 +312,11 @@ test fileUrl {
 test parseResponse {
     const r = try parseResponse("HTTP/1.1 503 Not Synced Yet\r\nX-NomadFS-Error: NotSynced\r\n\r\n");
     try std.testing.expectEqual(error.NomadFsNotSynced, statusError(r));
+    const whole = try parseResponse("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nETag: \"ab\"\r\n\r\nhello");
+    try std.testing.expectEqualStrings("hello", whole.body);
+    // The node stopped mid-answer: refused, not taken for a short file.
+    try std.testing.expectError(error.NomadFsBadAnswer, parseResponse("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nhello"));
+    try std.testing.expectError(error.NomadFsBadAnswer, parseResponse("HTTP/1.1 200 OK\r\nContent-Length: x\r\n\r\nhello"));
 }
 
 test "a node that isn't running is NomadFsNotRunning" {
