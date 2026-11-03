@@ -45,7 +45,8 @@ pub fn build(b: *std.Build) void {
         .media_server = false,
         .global_shortcut = false,
         .input = false,
-        .clipboard = false,
+        // Copying a variable's name (src/desktop/app.zig: copyName).
+        .clipboard = true,
     });
 
     // The CLI (`zig build cli`, binary zig-out/bin/locket). Same vault

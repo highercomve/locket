@@ -151,9 +151,22 @@ fn rowClick(e: *ui.Engine, node: i64) !bool {
         try render(e);
         return true;
     }
+    if (hit.local == st.SecretRow.id("copy", 0)) return copyName(e, name);
     if (hit.local == st.SecretRow.id("edit", 0)) return openEditor(e, name);
     if (hit.local == st.SecretRow.id("delete", 0)) return askDelete(e, .secret, name);
     return false;
+}
+
+/// Copies a variable's name (never its value) to the clipboard.
+fn copyName(e: *ui.Engine, name: []const u8) !bool {
+    oriel.clipboard.writeText(name) catch |err| {
+        var buf: [96]u8 = undefined;
+        status(e, std.fmt.bufPrint(&buf, "Couldn't copy: {s}", .{@errorName(err)}) catch "Couldn't copy.");
+        return true;
+    };
+    var buf: [192]u8 = undefined;
+    status(e, std.fmt.bufPrint(&buf, "Copied {s}", .{name}) catch "Copied.");
+    return true;
 }
 
 fn key(e: *ui.Engine, node: i64, data: []const u8) !bool {
