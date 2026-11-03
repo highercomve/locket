@@ -207,6 +207,29 @@ locket run pantahub/stage --prefix -- ./my-agent.sh # as LOCKET_PH_TOKEN, …
 - Locket writes one line, on stderr: the workspace and a count, never a
   value. The command's own stdout is left alone.
 
+### Variables in the command's arguments
+
+Locket puts the variables in the command's environment, so your shell
+can't see them. In `locket run hub/prod -- mongo "$MONGO_URL"`, your shell
+expands `$MONGO_URL` before Locket starts, and `mongo` gets an empty
+argument. Use `--expand` and single quotes:
+
+```sh
+locket run hub/prod --expand -- kubectl exec -it my-pod -- mongo '$MONGO_URL'
+```
+
+Locket replaces `$NAME` and `${NAME}` in the arguments with the values of
+the variables it injected. Anything else, other `$`s included, is left
+as typed. `sh -c` does the same with your shell's rules:
+
+```sh
+locket run hub/prod -- sh -c 'kubectl exec -it my-pod -- mongo "$MONGO_URL"'
+```
+
+Either way the value ends up in a command line, where other processes
+of yours (`ps`) can see it, and so can the pod. Prefer the environment
+when the program can read it.
+
 ### Shell completion
 
 ```sh

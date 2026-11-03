@@ -25,6 +25,10 @@ uses [Semantic Versioning](https://semver.org/).
   its last edit, and deletions leave tombstones. Formats 1 and 2 are read
   and upgraded.
 - `config.json`: this machine's id and its sync backend.
+- `locket run --expand`: `$NAME` and `${NAME}` in the command's
+  arguments become the injected variables' values, for programs that take
+  a secret as an argument (`... --expand -- kubectl exec -it pod -- mongo
+  '$MONGO_URL'`).
 - **Shell completion**: `locket completion bash|zsh|fish` completes the
   commands, projects, workspaces and variable names. After `locket run
   <workspace> --`, it completes the command being run with that command's

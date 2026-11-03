@@ -6,7 +6,7 @@
 //!     locket rm project[/workspace]/NAME
 //!     locket rm --workspace project/workspace
 //!     locket rm --project project
-//!     locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
+//!     locket run project[/workspace] [--only A,B] [--prefix] [--expand] -- command [args...]
 //!
 //! Every project has a `default` workspace: leaving the workspace out
 //! means it (`locket run hub -- cmd`, `locket set hub/API_KEY`). Address
@@ -158,7 +158,7 @@ fn usage(code: u8) u8 {
         \\  locket rm project[/workspace]/NAME
         \\  locket rm --workspace project/workspace
         \\  locket rm --project project
-        \\  locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
+        \\  locket run project[/workspace] [--only A,B] [--prefix] [--expand] -- command [args...]
         \\  locket completion bash|zsh|fish         the shell completion script
         \\  locket sync [status | now | stop]       share the vault between machines:
         \\  locket sync setup <backend> [LOCATION]  ...from the first machine
@@ -169,7 +169,9 @@ fn usage(code: u8) u8 {
         \\
         \\Without a workspace, the project's `default` workspace is meant.
         \\run injects the variables under their stored names; --prefix
-        \\uses LOCKET_<NAME> instead. The desktop app is locket-app.
+        \\uses LOCKET_<NAME> instead. --expand also replaces '$NAME' and
+        \\'${NAME}' in the command's arguments (single-quote them, so your
+        \\shell leaves them alone). The desktop app is locket-app.
         \\
     ) catch {};
     w.interface.flush() catch {};
@@ -368,6 +370,9 @@ const RunArgs = struct {
     target: []const u8,
     only: []const u8 = "",
     prefix: bool = false,
+    /// Replace `$NAME` and `${NAME}` in the command's arguments with the
+    /// injected variables' values.
+    expand: bool = false,
     child: []const []const u8,
 };
 
@@ -386,6 +391,8 @@ fn parseRun(argv: []const []const u8) !RunArgs {
             args.only = argv[pos];
         } else if (std.mem.eql(u8, arg, "--prefix")) {
             args.prefix = true;
+        } else if (std.mem.eql(u8, arg, "--expand")) {
+            args.expand = true;
         } else if (std.mem.eql(u8, arg, "--raw")) {
             args.prefix = false; // the default now; kept so old scripts still run
         } else if (arg.len > 0 and arg[0] != '-' and target == null) {
@@ -412,14 +419,17 @@ fn run(
     };
 
     var environ = try std.process.Environ.Map.clone(env, arena);
-    const injected = inject(arena, &environ, w, args.only, args.prefix) catch |err| switch (err) {
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    const injected_names = &names;
+    const injected = inject(arena, &environ, w, args.only, args.prefix, injected_names) catch |err| switch (err) {
         error.NotFound => return fail("--only names a variable {f} doesn't have", .{r}),
         else => return err,
     };
     if (injected == 0) return fail("{f} has no variables to inject", .{r});
+    const child_argv = if (args.expand) try expandArgs(arena, args.child, &environ, injected_names.*) else args.child;
 
     var child = std.process.spawn(io, .{
-        .argv = args.child,
+        .argv = child_argv,
         .environ_map = &environ,
     }) catch |err| {
         return fail("could not start '{s}': {s}", .{ args.child[0], @errorName(err) });
@@ -453,6 +463,8 @@ fn inject(
     w: *const vault.Workspace,
     only: []const u8,
     prefix: bool,
+    /// Gets the injected variables' names (null: not needed).
+    names: ?*std.StringHashMapUnmanaged(void),
 ) !usize {
     const allowed = try namesSplit(arena, only);
     var it = allowed.keyIterator();
@@ -465,10 +477,51 @@ fn inject(
         // Stored names were checked when set, but a synced vault comes
         // from every machine holding the key: check again before use.
         if (!prefix) try vault.checkVarName(name);
-        try environ.put(if (prefix) try envName(arena, name) else name, secret.value);
+        const env_name = if (prefix) try envName(arena, name) else name;
+        try environ.put(env_name, secret.value);
+        if (names) |n| try n.put(arena, env_name, {});
         injected += 1;
     }
     return injected;
+}
+
+/// `--expand`: the command's arguments with `${NAME}` and `$NAME`
+/// replaced by the values of the variables injected (`names`). Anything
+/// else, other `$`s included, is left as it is.
+fn expandArgs(
+    arena: std.mem.Allocator,
+    argv: []const []const u8,
+    environ: *const std.process.Environ.Map,
+    names: std.StringHashMapUnmanaged(void),
+) ![]const []const u8 {
+    const out = try arena.alloc([]const u8, argv.len);
+    for (argv, out) |arg, *o| {
+        var buf: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < arg.len) { // bounded: i grows every round
+            if (arg[i] == '$' and i + 1 < arg.len) {
+                const braced = arg[i + 1] == '{';
+                const start = i + 1 + @intFromBool(braced);
+                var end = start;
+                if (braced) {
+                    end = std.mem.indexOfScalarPos(u8, arg, start, '}') orelse arg.len;
+                } else {
+                    while (end < arg.len and (std.ascii.isAlphanumeric(arg[end]) or arg[end] == '_')) end += 1;
+                }
+                const name = arg[start..end];
+                const closed = !braced or end < arg.len;
+                if (closed and name.len > 0 and names.contains(name)) {
+                    try buf.appendSlice(arena, environ.get(name).?);
+                    i = end + @intFromBool(braced);
+                    continue;
+                }
+            }
+            try buf.append(arena, arg[i]);
+            i += 1;
+        }
+        o.* = buf.items;
+    }
+    return out;
 }
 
 /// The `--only` names, as a set. Empty set: every secret passes.
@@ -561,20 +614,36 @@ test inject {
     try w.secrets.put(a, "API_KEY", .{ .value = "k" });
     try w.secrets.put(a, "db.url", .{ .value = "d" });
     var env: std.process.Environ.Map = .init(a);
-    try testing.expectEqual(@as(usize, 2), try inject(a, &env, &w, "", false));
+    try testing.expectEqual(@as(usize, 2), try inject(a, &env, &w, "", false, null));
     try testing.expectEqualStrings("k", env.get("API_KEY").?);
     var env2: std.process.Environ.Map = .init(a);
-    try testing.expectEqual(@as(usize, 1), try inject(a, &env2, &w, "db.url", true));
+    try testing.expectEqual(@as(usize, 1), try inject(a, &env2, &w, "db.url", true, null));
     try testing.expectEqualStrings("d", env2.get("LOCKET_DB_URL").?);
-    try testing.expectError(error.NotFound, inject(a, &env2, &w, "MISSING", false));
+    try testing.expectError(error.NotFound, inject(a, &env2, &w, "MISSING", false, null));
     // A loader variable that arrived through a synced vault: refused bare,
     // harmless under the prefix.
     try w.secrets.put(a, "LD_PRELOAD", .{ .value = "/tmp/x.so" });
     var env3: std.process.Environ.Map = .init(a);
-    try testing.expectError(error.ReservedVarName, inject(a, &env3, &w, "", false));
+    try testing.expectError(error.ReservedVarName, inject(a, &env3, &w, "", false, null));
     var env4: std.process.Environ.Map = .init(a);
-    _ = try inject(a, &env4, &w, "LD_PRELOAD", true);
+    _ = try inject(a, &env4, &w, "LD_PRELOAD", true, null);
     try testing.expectEqualStrings("/tmp/x.so", env4.get("LOCKET_LD_PRELOAD").?);
+}
+
+test expandArgs {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var env: std.process.Environ.Map = .init(a);
+    try env.put("MONGO_URL", "mongodb://u:p@h/db");
+    try env.put("db.url", "d");
+    try env.put("HOME", "/home/me");
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    try names.put(a, "MONGO_URL", {});
+    try names.put(a, "db.url", {});
+    const got = try expandArgs(a, &.{ "mongo", "$MONGO_URL", "--uri=${MONGO_URL}/x", "${db.url}", "$HOME", "$MONGO_URLS", "${MONGO_URL", "cost: $5", "$" }, &env, names);
+    const want = [_][]const u8{ "mongo", "mongodb://u:p@h/db", "--uri=mongodb://u:p@h/db/x", "d", "$HOME", "$MONGO_URLS", "${MONGO_URL", "cost: $5", "$" };
+    for (want, got) |w, g| try testing.expectEqualStrings(w, g);
 }
 
 test trimNewline {

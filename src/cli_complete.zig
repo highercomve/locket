@@ -121,7 +121,7 @@ const bash =
     \\                elif [[ $prev == --only ]]; then
     \\                    words=$("$locket" __complete names "${COMP_WORDS[2]}" 2>/dev/null)
     \\                else
-    \\                    words="--only --prefix --"
+    \\                    words="--only --prefix --expand --"
     \\                fi ;;
     \\            sync)
     \\                if ((COMP_CWORD == 2)); then
@@ -197,7 +197,7 @@ const zsh =
     \\            elif [[ $prev == --only ]]; then
     \\                _locket_list names ${words[3]}
     \\            else
-    \\                compadd -- --only --prefix --
+    \\                compadd -- --only --prefix --expand --
     \\            fi ;;
     \\        sync)
     \\            if (( CURRENT == 3 )); then
@@ -265,7 +265,7 @@ const fish =
     \\complete -c locket -n '__locket_is rm; and __locket_prev --project' -a '(locket __complete projects 2>/dev/null)'
     \\complete -c locket -n '__locket_is run; and __locket_at 2' -a '(locket __complete workspaces 2>/dev/null)'
     \\complete -c locket -n '__locket_is run; and __locket_prev --only' -a '(locket __complete names (__locket_tokens)[3] 2>/dev/null)'
-    \\complete -c locket -n '__locket_is run; and not __locket_at 2; and not __locket_prev --only' -a '--only --prefix --'
+    \\complete -c locket -n '__locket_is run; and not __locket_at 2; and not __locket_prev --only' -a '--only --prefix --expand --'
     \\complete -c locket -n '__locket_after_dashdash' -a '(__locket_command)'
     \\complete -c locket -n '__locket_is sync; and __locket_at 2' -a 'status now stop setup join backends'
     \\complete -c locket -n '__locket_is sync; and __locket_at 3; and __locket_prev setup join' -a '(locket __complete backends 2>/dev/null)'
