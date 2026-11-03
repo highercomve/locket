@@ -19,9 +19,13 @@
   // manifests aren't listed: the installers carry the same builds.
   function describe(name) {
     var m;
-    if (/\.AppImage$/.test(name)) return { os: "linux", kind: "app", format: "appimage", label: "AppImage" };
+    if (/-x86_64\.AppImage$/.test(name)) return { os: "linux", kind: "app", format: "appimage", label: "AppImage" };
     if (/_amd64\.deb$/.test(name)) return { os: "linux", kind: "app", format: "deb", label: ".deb" };
     if (/\.x86_64\.rpm$/.test(name)) return { os: "linux", kind: "app", format: "rpm", label: ".rpm" };
+    // arm64 Linux: listed under the x86_64 picker, as links.
+    if (/-aarch64\.AppImage$/.test(name)) return { os: "linux", kind: "arm", format: "appimage", label: "AppImage" };
+    if (/_arm64\.deb$/.test(name)) return { os: "linux", kind: "arm", format: "deb", label: ".deb" };
+    if (/\.aarch64\.rpm$/.test(name)) return { os: "linux", kind: "arm", format: "rpm", label: ".rpm" };
     if (/^Locket-[\d.]+-setup\.exe$/.test(name)) return { os: "windows", kind: "app", label: "Installer (.exe)" };
     if (/^Locket-[\d.]+-macos-arm64\.dmg$/.test(name)) return { os: "macos", kind: "app", label: "Disk image (.dmg)" };
     if ((m = /^locket-[\d.]+-(x86_64|aarch64)-linux$/.exec(name))) return { os: "linux", kind: "cli", label: m[1] };
@@ -74,9 +78,9 @@
     list.append(picker, link);
   }
 
-  function cliRow(list, clis) {
+  function cliRow(list, clis, title) {
     var row = el("p", "asset-cli");
-    row.append(el("span", null, "Command line: "));
+    row.append(el("span", null, (title || "Command line") + ": "));
     clis.forEach(function (file, i) {
       if (i) row.append(document.createTextNode(" · "));
       var a = el("a", null, file.label);
@@ -115,7 +119,7 @@
       if (release && release.assets && release.assets.length) return release;
       return fetchJson(endpoint, { Accept: "application/vnd.github+json" });
     }).then(function (release) {
-      var files = { linux: { app: [], cli: [] }, windows: { app: [], cli: [] }, macos: { app: [], cli: [] } };
+      var files = { linux: { app: [], arm: [], cli: [] }, windows: { app: [], arm: [], cli: [] }, macos: { app: [], arm: [], cli: [] } };
       (release.assets || []).forEach(function (asset) {
         var type = describe(asset.name);
         // Only files of this project's releases.
@@ -126,6 +130,7 @@
       });
       var order = { appimage: 0, deb: 1, rpm: 2 };
       files.linux.app.sort(function (a, b) { return order[a.format] - order[b.format]; });
+      files.linux.arm.sort(function (a, b) { return order[a.format] - order[b.format]; });
       files.linux.cli.sort(function (a, b) { return a.label.localeCompare(b.label) * -1; });
       version.textContent = release.tag_name ? "Latest release · " + release.tag_name : "Latest release";
       cards.forEach(function (card) {
@@ -133,12 +138,13 @@
         var list = card.querySelector("[data-assets]");
         list.replaceChildren();
         var mine = files[os];
-        if (!mine.app.length && !mine.cli.length) {
+        if (!mine.app.length && !mine.arm.length && !mine.cli.length) {
           list.append(el("span", "asset-loading", "Not in the latest release."));
           return;
         }
         if (os === "linux" && mine.app.length) linuxApp(list, mine.app);
         else if (mine.app.length) list.append(button(mine.app[0], "Download"));
+        if (mine.arm.length) cliRow(list, mine.arm, "arm64 app");
         if (mine.cli.length) cliRow(list, mine.cli);
       });
       var preferred = here && files[here].app[0];

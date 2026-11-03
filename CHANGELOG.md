@@ -8,6 +8,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The app for arm64 Linux**: `locket-app-<version>-aarch64.AppImage`
+  (updates itself, in `latest.json` as `aarch64-linux`) and its `.deb` and
+  `.rpm`, built natively on GitHub's arm64 runner.
+- **Install scripts** that install a release for your user, checked
+  against `SHA256SUMS`: `scripts/install.sh` for Linux and macOS
+  (`curl -fsSL …/install.sh | sh`) and `scripts/install.ps1` for Windows
+  (`irm …/install.ps1 | iex`).
+
 - **Sharing between machines.** `locket sync setup|join|now|status|stop|backends`,
   and a **Settings** page in the desktop app (sync, updates, about). Each
   machine keeps its full vault. Syncs merge every machine's edits, with

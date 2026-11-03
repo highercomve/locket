@@ -1,9 +1,9 @@
 # Builds Locket on Linux, macOS and Windows, and on a v* tag publishes the
 # GitHub release with signed update manifests:
 #
-#   latest.json      locket-app: the AppImage (x86_64-linux), the .app
-#                    (aarch64-macos), the exe the installer put in place
-#                    (x86_64-windows)
+#   latest.json      locket-app: the AppImage (x86_64 and aarch64 Linux),
+#                    the .app (aarch64-macos), the exe the installer put in
+#                    place (x86_64-windows)
 #   latest-cli.json  locket: x86_64/aarch64 Linux (static), aarch64/x86_64
 #                    macOS, x86_64 Windows
 #
@@ -42,6 +42,8 @@ jobs:
             [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "::error::tag $GITHUB_REF_NAME doesn't match build.zig.zon's version $v"; exit 1; }
             grep -q "^## $v\b" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## $v' entry"; exit 1; }
           fi
+      - name: install.sh passes shellcheck
+        run: shellcheck -s sh scripts/install.sh
 
   # Arch Linux: Oriel's GTK 4 bindings need a current GTK (Ubuntu LTS
   # runners are too old), as Oriel's own release does.
@@ -80,6 +82,43 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: linux
+          path: dist/
+
+  # The app for arm64 Linux, built natively on GitHub's arm64 runner (GTK
+  # doesn't cross-compile). Fedora, not Arch: Arch's images are x86_64
+  # only, and Fedora's GTK 4 is as current. The aarch64 command line is
+  # the linux job's (static, cross-compiled); this one only smoke-tests it.
+  linux-arm64:
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    container: registry.fedoraproject.org/fedora:latest
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - name: System packages
+        run: |
+          dnf install -y --setopt=install_weak_deps=False git pkgconf-pkg-config gtk4-devel wayland-devel wayland-protocols-devel libxkbcommon-devel squashfs-tools file which tar gzip xz
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz" | tar xz -C /usr/local/bin nfpm
+      - uses: actions/checkout@v4
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - name: Tests
+        run: zig build test --summary all
+      - name: Smoke test (the aarch64 command line, natively)
+        run: |
+          zig build -Dapp=false -Dtarget=aarch64-linux-musl -Doptimize=ReleaseSafe --prefix out/cli
+          bash scripts/smoke.sh out/cli/bin/locket
+      - name: App (AppImage, deb, rpm)
+        run: |
+          mkdir -p dist
+          zig build package -Doptimize=ReleaseSafe
+          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm dist/
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
           path: dist/
 
   macos:
@@ -152,6 +191,18 @@ jobs:
           cp out/cli/bin/locket.exe dist/locket-$V-x86_64-windows.exe
       - name: Smoke test
         run: bash scripts/smoke.sh dist/locket-$V-x86_64-windows.exe
+      - name: install.ps1 parses (5.1 and 7)
+        shell: pwsh
+        run: |
+          foreach ($exe in 'powershell', 'pwsh') {
+            & $exe -NoProfile -Command {
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+              if ($errors) { $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+              "$($PSVersionTable.PSVersion): ok"
+            }
+            if ($LASTEXITCODE) { exit 1 }
+          }
       - name: App (setup.exe)
         run: |
           # The install step puts zig-out/bin/locket-app.exe in place (the
@@ -185,7 +236,7 @@ jobs:
   # On a tag: sign the update manifests and publish the release.
   release:
     if: github.ref_type == 'tag'
-    needs: [version, linux, macos, windows]
+    needs: [version, linux, linux-arm64, macos, windows]
     runs-on: ubuntu-latest
     container: ghcr.io/archlinux/archlinux:latest
     permissions:
@@ -220,6 +271,7 @@ jobs:
           }
           app=com.foreachdeveloper.locket
           sign "locket-app-$V-x86_64.AppImage" $app x86_64-linux appimage
+          sign "locket-app-$V-aarch64.AppImage" $app aarch64-linux appimage
           sign "locket-app-$V-macos-arm64.app.tar.gz" $app aarch64-macos app.tar.gz
           sign "locket-app-$V-x86_64-windows.exe" $app x86_64-windows raw
           cli=com.foreachdeveloper.locket.cli

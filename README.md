@@ -45,7 +45,7 @@ update themselves from the GitHub releases.
 
 ## Contents
 
-- [Install](#install): [download](#download), [updates](#updates), [from source](#from-source)
+- [Install](#install): [install script](#install-script), [download](#download), [updates](#updates), [from source](#from-source)
 - [Projects, workspaces, variables](#projects-workspaces-variables)
 - [The command line](#the-command-line)
 - [The desktop app](#the-desktop-app)
@@ -57,6 +57,51 @@ update themselves from the GitHub releases.
 
 ## Install
 
+### Install script
+
+Linux and macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/highercomve/locket/main/scripts/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/highercomve/locket/main/scripts/install.ps1 | iex
+```
+
+They download the latest release, check every file against its
+`SHA256SUMS` and install for your user, no root or admin:
+
+| | The command line | The app |
+|---|---|---|
+| Linux (x86_64, aarch64) | `~/.local/bin/locket` | `~/.local/bin/locket-app` (the AppImage), with its launcher entry and icons |
+| macOS | `~/.local/bin/locket` | `~/Applications/Locket.app` (Apple silicon) |
+| Windows | `%LOCALAPPDATA%\locket\bin\locket.exe`, added to your `PATH` | the setup.exe, run silently |
+
+Options:
+
+```sh
+curl -fsSL …/install.sh | sh -s -- --no-app          # only the command line
+curl -fsSL …/install.sh | sh -s -- --version 0.1.0   # a given release
+# also --bin-dir DIR, --no-desktop (Linux: no launcher entry);
+# or LOCKET_NO_APP=1, LOCKET_VERSION, LOCKET_BIN_DIR, LOCKET_NO_DESKTOP=1
+```
+
+```powershell
+$env:LOCKET_NO_APP = '1'; irm …/install.ps1 | iex    # only the command line
+# also $env:LOCKET_VERSION, $env:LOCKET_BIN_DIR
+# (-NoApp, -Version, -BinDir when the script is saved and run)
+```
+
+Run it again to reinstall or move to another release. It never touches
+your vault.
+
+**AppImages need FUSE.** On Linux the script prints a note if FUSE isn't
+installed: add the `fuse3` package with your package manager (it
+provides `fusermount3`), or install the `.deb` / `.rpm` instead.
+
 ### Download
 
 Every [release](https://github.com/highercomve/locket/releases/latest)
@@ -66,7 +111,7 @@ file:
 | Platform | The app | The command line |
 |---|---|---|
 | Linux x86_64 | `locket-app-<version>-x86_64.AppImage` (updates itself), or the `.deb` / `.rpm` (both include `locket`) | `locket-<version>-x86_64-linux` (static) |
-| Linux aarch64 | | `locket-<version>-aarch64-linux` (static) |
+| Linux aarch64 | `locket-app-<version>-aarch64.AppImage` (updates itself), or the `.deb` / `.rpm` | `locket-<version>-aarch64-linux` (static) |
 | macOS (Apple silicon) | `Locket-<version>-macos-arm64.dmg` | `locket-<version>-aarch64-macos`, `-x86_64-macos` |
 | Windows x86_64 | `Locket-<version>-setup.exe` (per user, no admin) | `locket-<version>-x86_64-windows.exe` |
 
