@@ -4,6 +4,45 @@ All notable changes to Locket. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Sharing between machines.** `locket sync setup|join|now|status|stop|backends`,
+  and a **Settings** page in the desktop app (sync, updates, about). Each
+  machine keeps its full vault. Syncs merge every machine's edits, with
+  the newest edit winning per variable, workspace and project, and deletions
+  travel too. Commands sync before and after; the window syncs every
+  30 seconds and after each edit.
+- **Sync backends** behind one interface (`src/sync/connector.zig`,
+  listed in `src/sync/connectors.zig`):
+  - `nomadfs` reaches NomadFS's swarm folder through the running node's
+    local API, with no mount; conditional writes on content ids.
+  - `folder` uses any synced folder (Syncthing, Dropbox, a share, NomadFS's mount).
+- **Shared key**: `key.json` wraps the vault key with a passphrase
+  (Argon2id, 64 MiB, 3 passes; its parameters are bound into the seal).
+- Vault format 3: every entry is stamped with the time and the machine of
+  its last edit, and deletions leave tombstones. Formats 1 and 2 are read
+  and upgraded.
+- `config.json`: this machine's id and its sync backend.
+
+### Changed
+
+- Rekeying, used when joining, is crash-safe: `master.key.next` is
+  written first, and an interrupted rekey is finished or dropped on the
+  next open.
+
+### Security
+
+- `locket run` and `locket set` refuse variables that change how
+  programs start (`LD_*`, `DYLD_*`, `BASH_ENV`, `NODE_OPTIONS`...), even
+  when they come from a synced vault.
+- Everything read from a backend is validated and bounded: names, stamps,
+  8 MiB per file, 16 conflict copies per sync. The folder backend never
+  follows links.
+- The sync engine zeroes the memory it decrypts into; passphrases are
+  typed without echo (Windows too) and wiped after use.
+
 ## 0.1.0 - 2026-11-03
 
 The first release: a local secrets vault for AI agents, with a command

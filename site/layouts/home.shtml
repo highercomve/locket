@@ -64,8 +64,8 @@
 				</article>
 				<article class="feature plate">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6l-7-3z"/><path d="m9 12 2 2 4-4"/></svg></div>
-					<h3>Local, small, yours</h3>
-					<p>No server, no account, no network. The CLI is one static binary with no GUI libraries; everything lives in <code>~/.local/share/locket</code>. Free and open source under the MIT license.</p>
+					<h3>Local, and on every machine</h3>
+					<p>No server and no account. Share one vault between your machines through <a href="https://github.com/highercomve/nomadfs">NomadFS</a>'s swarm or any synced folder: each machine keeps a full copy, works offline, and the newest edit wins. The shared files only open with your passphrase. MIT licensed.</p>
 				</article>
 			</div>
 		</section>

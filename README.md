@@ -50,6 +50,7 @@ update themselves from the GitHub releases.
 - [The command line](#the-command-line)
 - [The desktop app](#the-desktop-app)
 - [Using it with agents](#using-it-with-agents)
+- [Sharing between machines](#sharing-between-machines)
 - [Safety](#safety)
 - [On disk](#on-disk)
 - [Development](#development)
@@ -254,6 +255,61 @@ conversation by convention, not by enforcement: an agent that can run
 shell commands as you could also run `locket get`. The planned MCP server
 is meant to close that gap by offering `run` without `get`.
 
+## Sharing between machines
+
+Locket can keep one vault in step across all your machines through a
+**sync backend**. Each machine keeps its own full vault and works offline;
+a sync merges the edits from every machine. Every variable, workspace and
+project carries the time and the machine of its last edit, and the newest
+edit wins. Deletions travel too.
+
+Backends (`locket sync backends`):
+
+| Backend | Location | What it is |
+|---|---|---|
+| `nomadfs` | NomadFS's folder (default `~/.nomadfs`) | the swarm folder of [NomadFS](https://github.com/highercomve/nomadfs), through the running node's local API. No mount needed |
+| `folder` | any absolute path | a folder another tool keeps in step: Syncthing, Dropbox, a network share, NomadFS's mount |
+
+```sh
+# The first machine shares its vault (asks for a new passphrase, twice):
+locket sync setup nomadfs
+
+# Every other machine joins (asks for that passphrase):
+locket sync join nomadfs
+
+locket sync status   # shared through what, and how the last sync went
+locket sync now      # sync now (commands also sync before and after)
+locket sync stop     # this machine stops syncing; its vault stays
+```
+
+In the desktop app, open **Settings**, choose a backend, type the
+passphrase and click *Connect*. The window says whether there's a shared
+vault to join there, or one to set up. While connected, it syncs every
+30 seconds and after every edit.
+
+What is shared, in Locket's own `locket/` folder of the backend:
+
+```
+key.json    the vault key, wrapped with your passphrase (Argon2id, 64 MiB)
+vault.enc   the vault, sealed with that key, like the local one
+```
+
+Neither file is readable without the passphrase. It's asked once per
+machine, when joining. From then on, the machine keeps the shared key as
+its own `master.key`. Anyone with the passphrase can read and edit the
+vault, and their clock decides which edit is newest. Only give it to
+machines you trust.
+
+When two machines write at once, a backend may keep both writes as
+conflict copies (`vault (conflict ...).enc`). The next sync merges and
+removes them, so no edit is lost. A copy that the shared key can't open
+is left alone.
+
+Adding a backend (S3, a database, WebDAV) means writing one file that
+implements `src/sync/connector.zig`'s small interface and adding it to the
+list in `src/sync/connectors.zig`. The engine, the CLI and the settings
+page all read that list.
+
 ## Safety
 
 - **One writer at a time.** Every change, from the CLI or the window,
@@ -271,6 +327,12 @@ is meant to close that gap by offering `run` without `get`.
   user only; Locket refuses to open a key that group or others can read.
   Anything running as your user can read both files. Moving the key into
   the OS keychain is on the roadmap.
+- **A synced vault is checked like a local one.** Names, sizes and
+  stamps are validated on every read. The folder backend never follows a
+  link in its area. `locket run` refuses variables that change how a
+  program starts (`LD_PRELOAD`, `DYLD_*`, `BASH_ENV`, `NODE_OPTIONS`...),
+  even when they arrive from another machine; `--prefix` makes them
+  harmless.
 
 ## On disk
 
@@ -287,15 +349,23 @@ master.key   32 random bytes, mode 0600: the vault's key
 vault.enc    nonce (12) || ciphertext || tag (16), mode 0600:
              the vault's JSON, sealed with AES-256-GCM
 lock         empty; held while a process reads or writes the vault
+config.json  this machine's id, and the sync backend when shared
+sync-status.json  how the last sync went
 ```
 
 `vault.enc` decrypts to:
 
 ```json
-{ "version": 2, "projects": { "pantahub": { "description": "",
-    "workspaces": { "default": { "secrets": { "API_URL": "..." } },
-                    "stage":   { "secrets": { "PH_TOKEN": "..." } } } } } }
+{ "version": 3,
+  "projects": { "pantahub": { "description": "", "t": 1793700000000, "d": "ffb1...",
+    "workspaces": { "default": { "t": 1793700000000, "d": "ffb1...",
+        "secrets": { "API_URL": { "v": "...", "t": 1793700000000, "d": "ffb1..." } } } } } },
+  "tombs": { "pantahub/old": { "t": 1793700100000, "d": "ffb1..." } } }
 ```
+
+`t` and `d` are each entry's last edit: the time in milliseconds, and the
+machine that made it. `tombs` records deletions, so they sync too. Vaults
+from version 1 and 2 are read and upgraded.
 
 ## Development
 
@@ -344,7 +414,8 @@ docs/icon.svg      the icon's source (resvg docs/icon.svg icon.png)
 ```
 
 `zig build atlas` checks the layers: `app` (thin entry points) over
-`front` (the CLI and the window) over `core`. Imports point down, never
+`front` (the CLI and the window) over `sync` (the sync engine and its
+backends) over `core`. Imports point down, never
 up, and both front ends use the core's operations and address rules, so
 nothing about the vault is implemented twice.
 
