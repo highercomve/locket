@@ -24,6 +24,7 @@ const vault = @import("vault.zig");
 const update = @import("update.zig");
 const cli_sync = @import("cli_sync.zig");
 const sync = @import("sync.zig");
+const cli_complete = @import("cli_complete.zig");
 
 const assert = std.debug.assert;
 const Ref = vault.Ref;
@@ -47,7 +48,18 @@ pub fn main(init: std.process.Init, argv: []const []const u8) !u8 {
         return update.run(io, arena, options);
     }
 
+    if (cmd == .completion) {
+        if (argv.len != 2) return usage(2);
+        const shell = std.meta.stringToEnum(cli_complete.Shell, argv[1]) orelse return usage(2);
+        var o: Out = .{};
+        const out = o.init();
+        out.writeAll(cli_complete.script(shell)) catch {};
+        out.flush() catch {};
+        return 0;
+    }
+
     const data_path = try vault.dataDir(init.environ_map, arena);
+    if (cmd == .__complete) return complete(arena, data_path, argv[1..]);
     if (cmd == .sync) {
         return cli_sync.run(io, arena, data_path, init.environ_map, argv[1..]) catch |err| switch (err) {
             error.Usage => usage(2),
@@ -81,6 +93,9 @@ const Command = enum {
     run,
     sync,
     update,
+    completion,
+    /// What the completion scripts ask for (cli_complete.zig).
+    __complete,
     version,
     @"--version",
     @"-V",
@@ -105,6 +120,24 @@ const Command = enum {
     }
 };
 
+/// `locket __complete <what> [arg]`: names for the completion scripts.
+/// No sync (a tab press never waits on the network), nothing on errors.
+fn complete(arena: std.mem.Allocator, data_path: []const u8, args: []const []const u8) u8 {
+    if (args.len == 0) return 0;
+    const what = std.meta.stringToEnum(cli_complete.What, args[0]) orelse return 0;
+    var o: Out = .{};
+    const out = o.init();
+    defer out.flush() catch {};
+    if (!what.needsVault()) {
+        cli_complete.list(null, what, null, out) catch {};
+        return 0;
+    }
+    var v = vault.open(io, arena, data_path, .read) catch return 0;
+    defer v.close();
+    cli_complete.list(&v, what, if (args.len > 1) args[1] else null, out) catch {};
+    return 0;
+}
+
 fn describe(err: anyerror) []const u8 {
     return vault.describeError(err) orelse sync.describe(err) orelse switch (err) {
         error.PassphrasesDiffer => "the two passphrases differ",
@@ -126,6 +159,7 @@ fn usage(code: u8) u8 {
         \\  locket rm --workspace project/workspace
         \\  locket rm --project project
         \\  locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
+        \\  locket completion bash|zsh|fish         the shell completion script
         \\  locket sync [status | now | stop]       share the vault between machines:
         \\  locket sync setup <backend> [LOCATION]  ...from the first machine
         \\  locket sync join <backend> [LOCATION]   ...from every other machine
@@ -194,7 +228,7 @@ fn dispatch(
             if (args.len != 1) return error.Usage;
             return if (cmd == .set) setSecret(v, arena, args[0]) else getSecret(v, args[0]);
         },
-        .help, .@"--help", .@"-h", .update, .sync, .version, .@"--version", .@"-V" => unreachable, // main answers these
+        .help, .@"--help", .@"-h", .update, .sync, .completion, .__complete, .version, .@"--version", .@"-V" => unreachable, // main answers these
     }
 }
 

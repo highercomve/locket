@@ -207,6 +207,23 @@ locket run pantahub/stage --prefix -- ./my-agent.sh # as LOCKET_PH_TOKEN, …
 - Locket writes one line, on stderr: the workspace and a count, never a
   value. The command's own stdout is left alone.
 
+### Shell completion
+
+```sh
+# bash, in ~/.bashrc
+eval "$(locket completion bash)"
+# zsh, in ~/.zshrc, after compinit
+source <(locket completion zsh)
+# fish, in ~/.config/fish/config.fish
+locket completion fish | source
+```
+
+Tab completes the commands, then projects, workspaces and variable names
+(names only, never values). After `locket run hub/prod --`, it completes
+the command being run, as it would without Locket: `locket run hub/prod
+-- git ch<TAB>` offers `checkout`. Pressing Tab reads the vault but never
+syncs, so completion doesn't wait on the network.
+
 ## The desktop app
 
 Open **Locket** from your launcher, or run `locket-app`. It manages the
