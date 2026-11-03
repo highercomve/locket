@@ -80,6 +80,11 @@ pub fn syncIfShared(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8) !
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const c = try configured(io, arena.allocator(), data_path) orelse return null;
+    return try syncRecorded(io, gpa, data_path, c);
+}
+
+/// `sync`, with its outcome written to sync-status.json.
+fn syncRecorded(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connector) !Report {
     const report = sync(io, gpa, data_path, c) catch |err| {
         recordStatus(io, gpa, data_path, false, describe(err) orelse @errorName(err));
         return err;
@@ -88,7 +93,8 @@ pub fn syncIfShared(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8) !
     return report;
 }
 
-fn summary(r: Report) []const u8 {
+/// A sync's outcome, in a few words.
+pub fn summary(r: Report) []const u8 {
     if (r.copies > 0) return "synced; merged edits made on two machines at once";
     if (r.pulled and r.pushed) return "synced both ways";
     if (r.pulled) return "synced; took changes from other machines";
@@ -120,6 +126,7 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
         // 2. Merge into the local vault, under its lock.
         var report: Report = .{};
         var push: ?[]u8 = null;
+        var merged_copies: std.ArrayListUnmanaged([]const u8) = .empty;
         {
             var v = try vault.open(io, a, data_path, .write);
             defer v.close();
@@ -130,10 +137,12 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
                 main_digest = try store.digest(a, &remote);
                 merged = try store.merge(a, &merged, &remote);
             }
-            for (copy_data.items) |data| {
-                // A copy this key can't open isn't ours to merge: it stays.
+            for (copy_data.items, copy_names.items) |data, name| {
+                // A copy this key can't open isn't ours to merge: it stays,
+                // and so do its edits (it's never removed below).
                 const copy = vault.unseal(a, v.key, data) catch continue;
                 merged = try store.merge(a, &merged, &copy);
+                try merged_copies.append(a, name);
             }
             const merged_digest = try store.digest(a, &merged);
             if (!std.mem.eql(u8, &merged_digest, &(try store.digest(a, &v.store)))) {
@@ -142,7 +151,7 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
                 report.pulled = true;
             }
             const same = if (main_digest) |d| std.mem.eql(u8, &d, &merged_digest) else false;
-            if (!same or copy_names.items.len > 0) push = try vault.seal(a, io, v.key, &v.store);
+            if (!same or merged_copies.items.len > 0) push = try vault.seal(a, io, v.key, &v.store);
         }
 
         // 3. Share the merge, unless someone wrote meanwhile.
@@ -150,9 +159,9 @@ pub fn sync(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connec
         const now = try c.readOptional(io, a, shared_vault);
         if (!sameBytes(now, main)) continue;
         try c.write(io, a, shared_vault, sealed);
-        for (copy_names.items) |name| c.remove(io, a, name) catch {};
+        for (merged_copies.items) |name| c.remove(io, a, name) catch {};
         report.pushed = true;
-        report.copies = copy_names.items.len;
+        report.copies = merged_copies.items.len;
         return report;
     }
     return error.SyncBusy;
@@ -181,7 +190,7 @@ pub fn setup(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []
         try c.write(io, a, keywrap.file, wrapped);
         try saveSync(io, a, data_path, kind, path);
     }
-    return finish(io, gpa, data_path, c);
+    return syncRecorded(io, gpa, data_path, c);
 }
 
 /// Joins the vault shared at `path`: unwraps its key with `passphrase`,
@@ -209,7 +218,7 @@ pub fn join(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, kind: []c
         }
         try saveSync(io, a, data_path, kind, path);
     }
-    return finish(io, gpa, data_path, c);
+    return syncRecorded(io, gpa, data_path, c);
 }
 
 /// Stops syncing this machine. The shared vault, and the other machines,
@@ -242,15 +251,6 @@ fn saveSync(io: std.Io, a: std.mem.Allocator, data_path: []const u8, kind: []con
     var cfg = try config.load(io, a, data_path);
     cfg.sync = .{ .connector = kind, .path = path };
     try config.save(io, a, data_path, cfg);
-}
-
-fn finish(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, c: Connector) !Report {
-    const report = sync(io, gpa, data_path, c) catch |err| {
-        recordStatus(io, gpa, data_path, false, describe(err) orelse @errorName(err));
-        return err;
-    };
-    recordStatus(io, gpa, data_path, true, summary(report));
-    return report;
 }
 
 /// Writes the last sync's outcome to sync-status.json (best effort: a
@@ -400,6 +400,24 @@ test "conflict copies the backend made are merged and removed" {
     for (try c.list(io, al)) |name| try testing.expect(!c.isCopyOf(name, shared_vault));
     _ = (try syncIfShared(io, g, w.b)).?;
     try testing.expectEqualStrings("a", (try w.get(w.b, "hub", "default", "FROM_A")).?);
+}
+
+test "a conflict copy this key can't open is left alone, not deleted" {
+    var w = try World.init();
+    defer w.deinit();
+    const io = testing.io;
+    const g = testing.allocator;
+    const al = w.arena.allocator();
+    try w.set(w.a, "hub", "default", "A", "1");
+    _ = try setup(io, g, w.a, "folder", w.shared, "a good passphrase");
+    const c = try w.connector();
+    const foreign: [vault.key_len]u8 = @splat(3);
+    var s: store.Store = .{};
+    try c.write(io, al, "vault (conflict from x).enc", try vault.seal(al, io, foreign, &s));
+    try w.set(w.a, "hub", "default", "B", "2"); // something to push
+    const r = (try syncIfShared(io, g, w.a)).?;
+    try testing.expectEqual(@as(usize, 0), r.copies);
+    try testing.expect(try c.readOptional(io, al, "vault (conflict from x).enc") != null);
 }
 
 test "an unshared vault doesn't sync; stop keeps the vault" {

@@ -70,6 +70,7 @@ pub fn afterEdit(e: *ui.Engine) void {
 fn requestSync(e: *ui.Engine) !void {
     if (!info.shared or syncing) return;
     syncing = true;
+    errdefer syncing = false; // never stuck "in flight" when the invoke fails
     try invoke(e, .now, .{});
 }
 
@@ -140,6 +141,7 @@ pub fn connect(e: *ui.Engine) !bool {
     }
     if (pass.len == 0) return statusFail(e, "Type the passphrase.");
     connecting = true;
+    errdefer connecting = false;
     const joining = probe == .shared;
     try busyText(e, if (joining) "Unlocking the shared key and merging…" else "Wrapping the key and sharing the vault…");
     try invoke(e, if (joining) .join else .setup, .{ .kind = kind, .path = path, .passphrase = pass });
@@ -150,6 +152,7 @@ pub fn connect(e: *ui.Engine) !bool {
 pub fn syncNow(e: *ui.Engine) !bool {
     if (syncing) return true;
     syncing = true;
+    errdefer syncing = false;
     try busyText(e, "Syncing…");
     try invoke(e, .now, .{});
     return true;
@@ -201,10 +204,8 @@ pub fn resolved(e: *ui.Engine, req_id: u32, ok: bool, json: []const u8) !void {
 }
 
 fn failed(e: *ui.Engine, req: Request, json: []const u8) !void {
-    // The command's message: plain text, or a JSON string.
-    const parsed = std.json.parseFromSlice([]const u8, e.gpa, json, .{}) catch null;
-    defer if (parsed) |p| p.deinit();
-    const message = if (parsed) |p| p.value else if (json.len > 0) json else "The sync failed.";
+    var msg_buf: [1024]u8 = undefined;
+    const message = w.failureText(json, &msg_buf, "The sync failed.");
     switch (req) {
         .now => {
             syncing = false;
@@ -250,6 +251,7 @@ fn takeInfo(e: *ui.Engine, json: []const u8) !void {
     // First word of a newly shared vault: sync now, so the window is current.
     if (info.shared and !was_shared and !syncing) {
         syncing = true;
+        errdefer syncing = false;
         try invoke(e, .now, .{});
     }
     try paint(e);

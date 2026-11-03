@@ -389,6 +389,7 @@ pub fn unmarshal(gpa: std.mem.Allocator, plain: []const u8) !Store {
     while (p_it.next()) |p_entry| {
         const p_obj = p_entry.value_ptr.*;
         if (p_obj != .object) return error.CorruptVault;
+        try validName(p_entry.key_ptr.*);
         var p: Project = .{ .stamp = try readStamp(p_obj) };
         if (p_obj.object.get("description")) |d| {
             if (d == .string) p.description = try gpa.dupe(u8, d.string);
@@ -405,6 +406,7 @@ pub fn unmarshal(gpa: std.mem.Allocator, plain: []const u8) !Store {
             while (w_it.next()) |w_entry| {
                 const w_obj = w_entry.value_ptr.*;
                 if (w_obj != .object) return error.CorruptVault;
+                try validName(w_entry.key_ptr.*);
                 const w = try workspaceOrCreate(gpa, &p, w_entry.key_ptr.*, try readStamp(w_obj));
                 if (w_obj.object.get("secrets")) |secrets| try readSecrets(gpa, secrets, &w.secrets, ver >= 3);
             }
@@ -417,18 +419,29 @@ pub fn unmarshal(gpa: std.mem.Allocator, plain: []const u8) !Store {
         var t_it = tombs.object.iterator();
         while (t_it.next()) |t| {
             if (t.value_ptr.* != .object) return error.CorruptVault;
+            var parts = std.mem.splitScalar(u8, t.key_ptr.*, '/');
+            var n: usize = 0;
+            while (parts.next()) |part| : (n += 1) {
+                if (n == 3) return error.CorruptVault;
+                try validName(part);
+            }
             try s.bury(gpa, t.key_ptr.*, try readStamp(t.value_ptr.*));
         }
     }
     return s;
 }
 
+/// No stamp is later than this (the year 3000): a vault claiming one is
+/// corrupt. Without the bound, one entry stamped at the end of time would
+/// win every merge forever and leave no room for a newer stamp.
+pub const max_t: i64 = 32_503_680_000_000;
+
 /// An entry's stamp; zero when it has none (versions 1 and 2).
 fn readStamp(obj: std.json.Value) !Stamp {
     if (obj != .object) return error.CorruptVault;
     var st: Stamp = .{};
     if (obj.object.get("t")) |t| st.t = switch (t) {
-        .integer => |i| std.math.cast(i64, i) orelse return error.CorruptVault,
+        .integer => |i| if (i >= 0 and i <= max_t) i else return error.CorruptVault,
         else => return error.CorruptVault,
     };
     if (obj.object.get("d")) |d| {
@@ -442,6 +455,7 @@ fn readSecrets(gpa: std.mem.Allocator, value: std.json.Value, out: *Secrets, sta
     if (value != .object) return error.CorruptVault;
     var it = value.object.iterator();
     while (it.next()) |entry| {
+        try validName(entry.key_ptr.*);
         const v = entry.value_ptr.*;
         const secret: Secret = if (stamped) blk: {
             if (v != .object) return error.CorruptVault;
@@ -454,6 +468,14 @@ fn readSecrets(gpa: std.mem.Allocator, value: std.json.Value, out: *Secrets, sta
         };
         try out.put(gpa, try gpa.dupe(u8, entry.key_ptr.*), secret);
     }
+}
+
+/// A name in vault.json: what vault.checkName allows (1-128 bytes, no
+/// '/', whitespace or control bytes). Paths join names with '/' into
+/// fixed buffers sized for that.
+fn validName(name: []const u8) !void {
+    if (name.len == 0 or name.len > 128) return error.CorruptVault;
+    for (name) |c| if (c == '/' or c <= ' ' or c == 0x7f) return error.CorruptVault;
 }
 
 pub fn workspaceOrCreate(gpa: std.mem.Allocator, p: *Project, name: []const u8, stamp: Stamp) !*Workspace {
@@ -618,6 +640,16 @@ test "json: v3 round-trips stamps and tombstones; v1 and v2 open with zero stamp
     );
     try testing.expectEqualStrings("s", v2.projects.get("hub").?.workspaces.get("stage").?.secrets.get("K").?.value);
     try testing.expectError(error.CorruptVault, unmarshal(a, "{\"version\":9,\"projects\":{}}"));
+    // The end of time, a name a path can't hold, a tombstone path too deep.
+    try testing.expectError(error.CorruptVault, unmarshal(a,
+        \\{"version":3,"projects":{"p":{"t":9223372036854775807,"d":"1","workspaces":{}}}}
+    ));
+    try testing.expectError(error.CorruptVault, unmarshal(a,
+        \\{"version":3,"projects":{"a/b":{"t":1,"d":"1","workspaces":{}}}}
+    ));
+    try testing.expectError(error.CorruptVault, unmarshal(a,
+        \\{"version":3,"projects":{},"tombstones":{"a/b/c/d":{"t":1,"d":"1"}}}
+    ));
 }
 
 test "free releases a store built with a general allocator" {

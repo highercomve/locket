@@ -1,13 +1,12 @@
 //! `<data>/config.json`: this machine's settings, none of them secret.
 //!
 //!     { "device": "<16 hex digits>",
-//!       "sync": { "connector": "nomadfs", "path": "/home/me/NomadFS/Swarm" },
-//!       "last_sync": { "t": <ms>, "ok": true, "message": "..." } }
+//!       "sync": { "connector": "nomadfs", "path": "/home/me/NomadFS/Swarm" } }
 //!
 //! `device` identifies this machine in the vault's stamps (store.zig); it
 //! is made once, at random. `sync` is the connector the vault is shared
-//! through (src/sync/), absent when it isn't shared; `last_sync` is how
-//! the last sync went, for `locket sync status` and the settings page.
+//! through (src/sync/), absent when it isn't shared. (How the last sync
+//! went is sync-status.json: src/sync/engine.zig.)
 //! Written like the vault (temp file, rename), under the vault's lock.
 //! @atlas layer: core
 
@@ -23,16 +22,9 @@ pub const Sync = struct {
     path: []const u8,
 };
 
-pub const LastSync = struct {
-    t: i64 = 0,
-    ok: bool = false,
-    message: []const u8 = "",
-};
-
 pub const Config = struct {
     device: []const u8 = "",
     sync: ?Sync = null,
-    last_sync: ?LastSync = null,
 
     /// The device id; 0 when there is none yet.
     pub fn deviceId(c: Config) u64 {
@@ -91,10 +83,9 @@ test "config round-trips, and a missing file is the defaults" {
 
     var buf: [16]u8 = undefined;
     const dev = newDevice(io, &buf);
-    try save(io, testing.allocator, dir, .{ .device = dev, .sync = .{ .connector = "nomadfs", .path = "/m/Swarm" }, .last_sync = .{ .t = 5, .ok = true, .message = "ok" } });
+    try save(io, testing.allocator, dir, .{ .device = dev, .sync = .{ .connector = "nomadfs", .path = "/m/Swarm" } });
     const back = try load(io, a, dir);
     try testing.expectEqualStrings("nomadfs", back.sync.?.connector);
     try testing.expectEqualStrings("/m/Swarm", back.sync.?.path);
     try testing.expect(back.deviceId() != 0);
-    try testing.expect(back.last_sync.?.ok);
 }

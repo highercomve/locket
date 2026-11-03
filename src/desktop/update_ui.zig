@@ -107,9 +107,8 @@ pub fn resolved(e: *ui.Engine, req_id: u32, ok: bool, json: []const u8) !void {
 
 fn failed(e: *ui.Engine, req: Request, json: []const u8) !void {
     // The command's message: a JSON string, or plain text.
-    const parsed = std.json.parseFromSlice([]const u8, e.gpa, json, .{}) catch null;
-    defer if (parsed) |p| p.deinit();
-    const message = if (parsed) |p| p.value else if (json.len > 0) json else "The update command failed.";
+    var msg_buf: [1024]u8 = undefined;
+    const message = w.failureText(json, &msg_buf, "The update command failed.");
     switch (req) {
         .check => {
             phase = .idle;

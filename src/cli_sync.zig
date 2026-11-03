@@ -25,7 +25,7 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: any
         .status => return status(io, arena, data_path),
         .now => {
             const report = try sync.syncIfShared(io, arena, data_path) orelse return error.NotConfigured;
-            say(io, "locket: {s}\n", .{summary(report)});
+            say(io, "locket: {s}\n", .{sync.summary(report)});
             return 0;
         },
         .stop => {
@@ -47,7 +47,7 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: any
                 try sync.setup(io, arena, data_path, kind.id, path, passphrase)
             else
                 try sync.join(io, arena, data_path, kind.id, path, passphrase);
-            say(io, "locket: {s}\n", .{summary(report)});
+            say(io, "locket: {s}\n", .{sync.summary(report)});
             if (sub == .setup) say(io, "locket: on your other machines: locket sync join {s}{s}{s}\n", .{ kind.id, if (args.len == 3) " " else "", if (args.len == 3) path else "" });
             return 0;
         },
@@ -73,14 +73,6 @@ fn status(io: std.Io, arena: std.mem.Allocator, data_path: []const u8) !u8 {
         say(io, "last sync: {s}, {d} s ago: {s}\n", .{ if (s.ok) "ok" else "failed", ago, s.message });
     } else say(io, "last sync: never\n", .{});
     return 0;
-}
-
-fn summary(r: sync.Report) []const u8 {
-    if (r.copies > 0) return "synced; merged edits made on two machines at once";
-    if (r.pulled and r.pushed) return "synced both ways";
-    if (r.pulled) return "synced; took changes from other machines";
-    if (r.pushed) return "synced; shared this machine's changes";
-    return "up to date";
 }
 
 /// The passphrase: typed without echo (twice to confirm a new one), or
@@ -146,9 +138,4 @@ fn warn(io: std.Io, comptime fmt: []const u8, args: anytype) void {
     var w = std.Io.File.stderr().writerStreaming(io, &buf);
     w.interface.print(fmt, args) catch {};
     w.interface.flush() catch {};
-}
-
-test summary {
-    try std.testing.expectEqualStrings("up to date", summary(.{}));
-    try std.testing.expectEqualStrings("synced both ways", summary(.{ .pulled = true, .pushed = true }));
 }

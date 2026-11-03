@@ -108,7 +108,7 @@ pub const Vault = struct {
 
     /// A stamp for a change made now: newer than everything in the vault.
     pub fn stamp(v: *Vault) Stamp {
-        const t = if (v.clock_ms > v.high.t) v.clock_ms else v.high.t + 1;
+        const t = if (v.clock_ms > v.high.t) v.clock_ms else v.high.t +| 1;
         v.high = .{ .t = t, .d = v.device };
         return v.high;
     }
@@ -168,9 +168,14 @@ pub const Vault = struct {
         const dup_desc = try v.gpa.dupe(u8, description);
         errdefer v.gpa.free(dup_desc);
         const st = v.stamp();
+        // Renamed first: a tombstone for a name still in use would delete
+        // it everywhere else.
         if (renaming) {
-            try v.store.bury(v.gpa, old_name, st);
+            // Copied first: `old_name` may be the key the rename frees.
+            var buf: [3 * 129]u8 = undefined;
+            const old_path = store.join(&buf, &.{old_name});
             try renameKey(v.gpa, &v.store.projects, index, new_name);
+            try v.store.bury(v.gpa, old_path, st);
         }
         const p = &v.store.projects.values()[index];
         v.gpa.free(p.description);
@@ -205,8 +210,9 @@ pub const Vault = struct {
         if (p.workspaces.contains(new_name)) return error.Exists;
         const st = v.stamp();
         var buf: [3 * 129]u8 = undefined;
-        try v.store.bury(v.gpa, store.join(&buf, &.{ project_name, old_name }), st);
+        const old_path = store.join(&buf, &.{ project_name, old_name }); // before the rename frees it
         try renameKey(v.gpa, &p.workspaces, index, new_name);
+        try v.store.bury(v.gpa, old_path, st);
         restampWorkspace(&p.workspaces.values()[index], st);
     }
 
@@ -263,8 +269,9 @@ pub const Vault = struct {
             const index = w.secrets.getIndex(old_name) orelse return error.NotFound;
             if (renaming) {
                 var buf: [3 * 129]u8 = undefined;
-                try v.store.bury(v.gpa, store.join(&buf, &.{ project_name, workspace_name, old_name }), v.stamp());
+                const old_path = store.join(&buf, &.{ project_name, workspace_name, old_name }); // before the rename frees it
                 try renameKey(v.gpa, &w.secrets, index, new_name);
+                try v.store.bury(v.gpa, old_path, v.stamp());
             }
         }
         try v.setSecret(project_name, workspace_name, new_name, value);

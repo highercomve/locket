@@ -65,6 +65,23 @@ pub fn focus(e: *ui.Engine, node: i64) void {
     if (e.tree.get(node)) |n| e.backend.focus(e.backend.ctx, n);
 }
 
+/// A failed command's message as Oriel delivers it to `resolved`: plain
+/// text, or a JSON string. It lives in `buf` or `json`.
+pub fn failureText(json: []const u8, buf: []u8, fallback: []const u8) []const u8 {
+    var fba = std.heap.FixedBufferAllocator.init(buf);
+    const parsed = std.json.parseFromSliceLeaky([]const u8, fba.allocator(), json, .{}) catch {
+        return if (json.len > 0) json else fallback;
+    };
+    return parsed;
+}
+
+test failureText {
+    var buf: [256]u8 = undefined;
+    try std.testing.expectEqualStrings("plain", failureText("plain", &buf, "x"));
+    try std.testing.expectEqualStrings("quoted", failureText("\"quoted\"", &buf, "x"));
+    try std.testing.expectEqualStrings("x", failureText("", &buf, "x"));
+}
+
 /// A choice button's look: amber when chosen, quiet otherwise.
 pub fn choose(e: *ui.Engine, node: i64, on: bool) !void {
     var props = e.tree.get(node).?.props;

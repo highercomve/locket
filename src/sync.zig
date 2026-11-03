@@ -26,6 +26,7 @@ pub const isShared = engine.isShared;
 pub const configured = engine.configured;
 pub const loadStatus = engine.loadStatus;
 pub const describe = engine.describe;
+pub const summary = engine.summary;
 
 test {
     @import("std").testing.refAllDecls(@This());
