@@ -1,6 +1,7 @@
 <extend template="base.shtml">
 <head id="head">
 	<title>Locket · Your agents' secrets, kept close</title>
+	<script src="$site.asset('downloads.js').link().suffix('?v=20261103b')" defer></script>
 </head>
 <body id="body">
 	<main class="home">
@@ -11,7 +12,7 @@
 					<h1 class="hero-title">Your agents' secrets,<br><span class="accent">kept close.</span></h1>
 					<p class="hero-lead">Locket is a local vault for the API keys, tokens and connection strings your AI agents need. They run commands through it, and the values land in the command's environment, never in the chat, the logs, <code>ps</code> or your shell history.</p>
 					<div class="hero-actions">
-						<a class="btn btn-primary" href="#install">Install</a>
+						<a class="btn btn-primary" data-primary-download href="#download">Download</a>
 						<a class="btn btn-ghost" href="#how">How it works</a>
 						<a class="btn btn-ghost" href="https://github.com/highercomve/locket">View on GitHub</a>
 					</div>
@@ -231,11 +232,38 @@ the command's environment:
 			</ol>
 		</section>
 
+		<section class="section" id="download" data-release-json="$site.asset('release.json').link()">
+			<div class="section-head">
+				<p class="plate-label">06 · download</p>
+				<h2>Locket for Linux, macOS and Windows</h2>
+				<p>The desktop app and the command line, from the latest release. Both update themselves: <code>locket update</code>, or the app's <strong>Update</strong> button, after checking the release's signature. Free and open source.</p>
+				<p class="release-badge" data-release-version role="status">Finding the latest release…</p>
+			</div>
+			<div class="download-grid download-grid-3">
+				<article class="download-card plate" data-download-os="linux">
+					<div class="download-card-head"><h3>Linux</h3><span class="plate-label">x86_64</span></div>
+					<p>The AppImage updates itself; the .deb and .rpm also install <code>locket</code> and update with your package manager.</p>
+					<div class="download-assets" data-assets><span class="asset-loading">Loading…</span></div>
+				</article>
+				<article class="download-card plate" data-download-os="macos">
+					<div class="download-card-head"><h3>macOS</h3><span class="plate-label">Apple silicon</span></div>
+					<p>A disk image: drag Locket to Applications, then open it with right-click → <strong>Open</strong> the first time.</p>
+					<div class="download-assets" data-assets><span class="asset-loading">Loading…</span></div>
+				</article>
+				<article class="download-card plate" data-download-os="windows">
+					<div class="download-card-head"><h3>Windows</h3><span class="plate-label">10 · 11</span></div>
+					<p>A per-user installer, no admin needed. SmartScreen asks once: <strong>More info</strong>, then <strong>Run anyway</strong>.</p>
+					<div class="download-assets" data-assets><span class="asset-loading">Loading…</span></div>
+				</article>
+			</div>
+			<p class="note">Put the command line on your <code>PATH</code> as <code>locket</code>. Every file is on the <a href="https://github.com/highercomve/locket/releases/latest">release page</a>, with its checksum in <code>SHA256SUMS</code>.</p>
+		</section>
+
 		<section class="section" id="install">
 			<div class="section-head">
-				<p class="plate-label">06 · install</p>
+				<p class="plate-label">07 · from source</p>
 				<h2>Build it with <a href="https://ziglang.org/">Zig</a> &amp; <a href="https://oriel.foreachdeveloper.com">Oriel</a></h2>
-				<p>You need <a href="https://ziglang.org/download/">Zig 0.16</a> and, for the desktop app, the GTK 4 development files (<code>gtk4</code> on Arch, <code>libgtk-4-dev</code> on Debian and Ubuntu, <code>gtk4-devel</code> on Fedora). Linux for now.</p>
+				<p>You need <a href="https://ziglang.org/download/">Zig 0.16</a> and, for the desktop app on Linux, the GTK 4 development files (<code>gtk4</code> on Arch, <code>libgtk-4-dev</code> on Debian and Ubuntu, <code>gtk4-devel</code> on Fedora).</p>
 			</div>
 			<div class="code-pair install-pair">
 				<figure class="code-card plate install-card">
@@ -254,15 +282,15 @@ NO_APP=1 scripts/install-local.sh   <span class="tk-com"># CLI only, no GTK</spa
 zig build test                      <span class="tk-com"># the unit tests</span></code></pre>
 				</figure>
 			</div>
-			<p class="note">Run the script again to update; it never touches your vault. The <a href="https://github.com/highercomve/locket#readme">README</a> covers every command and option.</p>
+			<p class="note">Run the script again to rebuild from your checkout; it never touches your vault. The <a href="https://github.com/highercomve/locket#readme">README</a> covers every command and option.</p>
 		</section>
 
 		<section class="cta plate">
-			<p class="plate-label">07 · start</p>
+			<p class="plate-label">08 · start</p>
 			<h2>One vault, one command</h2>
 			<p>Install Locket, store your first workspace, and run your agent through it.</p>
 			<div class="hero-actions">
-				<a class="btn btn-primary" href="#install">Install</a>
+				<a class="btn btn-primary" href="#download">Download</a>
 				<a class="btn btn-ghost" href="https://github.com/highercomve/locket">View on GitHub</a>
 			</div>
 		</section>

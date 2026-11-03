@@ -607,3 +607,6 @@ code {
 /* Locket: code cards right after a route (the CLI examples under "how it
    works") get the same breathing room as the network block on NomadFS. */
 .route + .code-pair { margin-top: 56px; }
+/* Locket ships three platforms: three download cards to a row. */
+.download-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) { .download-grid-3 { grid-template-columns: 1fr; } }
