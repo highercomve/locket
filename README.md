@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <a href="https://locket.foreachdeveloper.com">Website</a> ·
+  <a href="https://github.com/highercomve/locket/releases/latest">Download</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
   <img src="docs/images/workspaces.png" alt="Locket's window: projects on the left, the pantahub project's workspace tabs (default, stage, prod), and the stage workspace's variables with one revealed">
 </p>
 
