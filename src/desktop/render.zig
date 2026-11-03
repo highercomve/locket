@@ -138,7 +138,8 @@ fn renderSecrets(e: *ui.Engine, ws: *const vault.Workspace) !void {
     var ids: [st.max_rows]i64 = undefined;
     var buf: [64]u8 = undefined;
     try w.text(e, sid("secret-count"), try std.fmt.bufPrint(&buf, "{d}", .{keys.len}));
-    for (s.secrets, values[0..s.secrets.len], 0..) |name, value, i| {
+    for (s.secrets, values[0..s.secrets.len], 0..) |name, secret, i| {
+        const value = secret.value;
         const revealed = st.isSelected(s.revealed, name);
         ids[i] = try mountRow(st.SecretRow, e, st.secret_rows, st.secret_styles, i, &.{
             .{ .name = "name", .value = name },

@@ -22,6 +22,8 @@ const std = @import("std");
 const build_info = @import("build_info");
 const vault = @import("vault.zig");
 const update = @import("update.zig");
+const cli_sync = @import("cli_sync.zig");
+const sync = @import("sync.zig");
 
 const assert = std.debug.assert;
 const Ref = vault.Ref;
@@ -46,15 +48,29 @@ pub fn main(init: std.process.Init, argv: []const []const u8) !u8 {
     }
 
     const data_path = try vault.dataDir(init.environ_map, arena);
-    var v = vault.open(io, arena, data_path, cmd.mode()) catch |err| {
-        return fail("opening the vault: {s}", .{describe(err)});
-    };
-    defer v.close();
+    if (cmd == .sync) {
+        return cli_sync.run(io, arena, data_path, init.environ_map, argv[1..]) catch |err| switch (err) {
+            error.Usage => usage(2),
+            else => fail("{s}", .{describe(err)}),
+        };
+    }
 
-    return dispatch(&v, cmd, arena, init.environ_map, argv[1..]) catch |err| switch (err) {
-        error.Usage => usage(2),
-        else => fail("{s}", .{describe(err)}),
+    // A shared vault: take the other machines' changes first, so a read
+    // sees them and an edit lands on the latest.
+    cli_sync.auto(io, arena, data_path);
+    const code = code: {
+        var v = vault.open(io, arena, data_path, cmd.mode()) catch |err| {
+            return fail("opening the vault: {s}", .{describe(err)});
+        };
+        defer v.close();
+        break :code dispatch(&v, cmd, arena, init.environ_map, argv[1..]) catch |err| switch (err) {
+            error.Usage => usage(2),
+            else => fail("{s}", .{describe(err)}),
+        };
     };
+    // ...and share an edit right away (the vault's lock is released).
+    if (cmd.mode() == .write and code == 0) cli_sync.auto(io, arena, data_path);
+    return code;
 }
 
 const Command = enum {
@@ -63,6 +79,7 @@ const Command = enum {
     get,
     rm,
     run,
+    sync,
     update,
     version,
     @"--version",
@@ -89,7 +106,11 @@ const Command = enum {
 };
 
 fn describe(err: anyerror) []const u8 {
-    return vault.describeError(err) orelse @errorName(err);
+    return vault.describeError(err) orelse sync.describe(err) orelse switch (err) {
+        error.PassphrasesDiffer => "the two passphrases differ",
+        error.PassphraseTooLong => "the passphrase is too long",
+        else => @errorName(err),
+    };
 }
 
 fn usage(code: u8) u8 {
@@ -104,6 +125,10 @@ fn usage(code: u8) u8 {
         \\  locket rm --workspace project/workspace
         \\  locket rm --project project
         \\  locket run project[/workspace] [--only A,B] [--prefix] -- command [args...]
+        \\  locket sync [status | now | stop]       share the vault between machines:
+        \\  locket sync setup nomadfs [SWARM]     ...from the first machine
+        \\  locket sync join nomadfs [SWARM]      ...from every other machine
+        \\  locket sync setup|join folder FOLDER  ...through any synced folder
         \\  locket update [--check] [--yes]       install the latest release
         \\  locket --version
         \\
@@ -168,7 +193,7 @@ fn dispatch(
             if (args.len != 1) return error.Usage;
             return if (cmd == .set) setSecret(v, arena, args[0]) else getSecret(v, args[0]);
         },
-        .help, .@"--help", .@"-h", .update, .version, .@"--version", .@"-V" => unreachable, // main answers these
+        .help, .@"--help", .@"-h", .update, .sync, .version, .@"--version", .@"-V" => unreachable, // main answers these
     }
 }
 
@@ -399,9 +424,9 @@ fn inject(
         if (!w.secrets.contains(name.*)) return error.NotFound;
     }
     var injected: usize = 0;
-    for (w.secrets.keys(), w.secrets.values()) |name, value| {
+    for (w.secrets.keys(), w.secrets.values()) |name, secret| {
         if (allowed.count() > 0 and !allowed.contains(name)) continue;
-        try environ.put(if (prefix) try envName(arena, name) else name, value);
+        try environ.put(if (prefix) try envName(arena, name) else name, secret.value);
         injected += 1;
     }
     return injected;
@@ -493,8 +518,8 @@ test inject {
     defer arena.deinit();
     const a = arena.allocator();
     var w: vault.Workspace = .{};
-    try w.secrets.put(a, "API_KEY", "k");
-    try w.secrets.put(a, "db.url", "d");
+    try w.secrets.put(a, "API_KEY", .{ .value = "k" });
+    try w.secrets.put(a, "db.url", .{ .value = "d" });
     var env: std.process.Environ.Map = .init(a);
     try testing.expectEqual(@as(usize, 2), try inject(a, &env, &w, "", false));
     try testing.expectEqualStrings("k", env.get("API_KEY").?);

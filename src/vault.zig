@@ -1,28 +1,25 @@
-//! Locket's vault core: the model, the sealed storage and the operations
-//! every front end shares (the CLI, the desktop app, an MCP server).
+//! Locket's vault: the operations every front end shares (the CLI, the
+//! desktop app), the sealed storage and its lock. The data and how two
+//! copies merge are store.zig's; sharing between machines is src/sync/'s.
 //!
-//! Layout (`<data>/locket/` on the user's data dir):
+//! Layout (the data directory, see `dataDir`):
 //!
 //!     master.key   32 random bytes, mode 0600: the vault's key
 //!     vault.enc    nonce (12) || ciphertext || tag (16):
-//!                  vault.json sealed with AES-256-GCM
+//!                  vault.json (store.zig) sealed with AES-256-GCM
+//!     config.json  this machine's settings (config.zig)
+//!     lock         held while a process reads or writes the vault
 //!
 //! The model: projects hold workspaces, workspaces hold secrets (the
 //! environment variables one run gets). A workspace is addressed as
-//! `project/workspace` and a secret as `project/workspace/NAME`.
-//! `vault.json` inside the seal:
+//! `project/workspace` and a secret as `project/workspace/NAME`. Every
+//! project has a `default` workspace, always first, which can't be
+//! renamed or removed; `project` alone addresses it.
 //!
-//!     { "version": 2, "projects": { "<project>": {
-//!       "description": "...",
-//!       "workspaces": { "<workspace>": { "secrets": { "<NAME>": "<value>" } } } } } }
-//!
-//! Every project has a `default` workspace, always first, which can't be
-//! renamed or removed: a project "without workspaces" is a project whose
-//! secrets all live in it, and `project` alone addresses it
-//! (`locket run hub -- cmd` is `locket run hub/default -- cmd`).
-//!
-//! Version 1 vaults (secrets straight under a project) open as version 2
-//! with those secrets in `default`; the next save writes version 2.
+//! Every change is stamped (time, this machine) and every removal leaves
+//! a tombstone, so copies of the vault on several machines merge
+//! (store.merge). Stamps only move forward: a new one is newer than every
+//! stamp already in the vault, whatever this machine's clock says.
 //!
 //! Secrets are strings; values stay only in memory and the sealed file.
 //! The core never prints them, and `close` zeroes them.
@@ -44,9 +41,20 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const store = @import("store.zig");
+const config = @import("config.zig");
 
 const assert = std.debug.assert;
 const Aes = std.crypto.aead.aes_gcm.Aes256Gcm;
+
+pub const Store = store.Store;
+pub const Project = store.Project;
+pub const Workspace = store.Workspace;
+pub const Secret = store.Secret;
+pub const Secrets = store.Secrets;
+pub const Stamp = store.Stamp;
+pub const default_workspace = store.default_workspace;
+pub const isDefault = store.isDefault;
 
 pub const key_len = 32;
 const nonce_len = 12; // Aes256Gcm.nonce_length
@@ -54,38 +62,10 @@ const tag_len = 16; // Aes256Gcm.tag_length
 const vault_ad = "locket/v1"; // the seal's format, not the JSON's version
 
 pub const key_file = "master.key";
+/// The key a rekey is switching to, until the vault is sealed with it.
+const next_key_file = "master.key.next";
 pub const vault_file = "vault.enc";
 pub const lock_file = "lock";
-
-pub const store_version = 2;
-/// Every project's own workspace (and where version 1 secrets land).
-pub const default_workspace = "default";
-
-pub fn isDefault(workspace_name: []const u8) bool {
-    return std.mem.eql(u8, workspace_name, default_workspace);
-}
-
-pub const Secrets = std.StringArrayHashMapUnmanaged([]const u8);
-
-pub const Workspace = struct {
-    secrets: Secrets = .{},
-};
-
-pub const Project = struct {
-    description: []const u8 = "",
-    workspaces: std.StringArrayHashMapUnmanaged(Workspace) = .{},
-
-    pub fn secretCount(p: *const Project) usize {
-        var n: usize = 0;
-        for (p.workspaces.values()) |w| n += w.secrets.count();
-        return n;
-    }
-};
-
-pub const Store = struct {
-    version: u32 = store_version,
-    projects: std.StringArrayHashMapUnmanaged(Project) = .{},
-};
 
 pub const OpenError = error{
     CorruptVault,
@@ -109,18 +89,35 @@ pub const Vault = struct {
     /// The exclusive lock of a `write` vault, released by `close`.
     lock: ?std.Io.File = null,
 
+    /// This machine, in the stamps (config.json; 0 until it has one).
+    device: u64 = 0,
+    /// The wall clock when the vault was opened, in milliseconds.
+    clock_ms: i64 = 0,
+    /// The newest stamp in the vault, and the last one made.
+    high: Stamp = .{},
+
     /// Zeroes the values and the key, frees the store, releases the lock.
     pub fn close(v: *Vault) void {
-        for (v.store.projects.keys(), v.store.projects.values()) |name, *p| {
-            v.gpa.free(name);
-            freeProject(v.gpa, p);
-        }
-        v.store.projects.deinit(v.gpa);
+        store.free(v.gpa, &v.store);
         std.crypto.secureZero(u8, &v.key);
         if (v.lock) |f| f.close(v.io); // closing the file releases its lock
         v.lock = null;
         v.gpa.free(v.dir_path);
         v.* = undefined;
+    }
+
+    /// A stamp for a change made now: newer than everything in the vault.
+    pub fn stamp(v: *Vault) Stamp {
+        const t = if (v.clock_ms > v.high.t) v.clock_ms else v.high.t + 1;
+        v.high = .{ .t = t, .d = v.device };
+        return v.high;
+    }
+
+    /// Takes `s` as the vault's content (a merge's result), freeing the old.
+    pub fn replaceStore(v: *Vault, s: Store) void {
+        store.free(v.gpa, &v.store);
+        v.store = s;
+        v.high = v.high.max(s.high());
     }
 
     // ------------------------------------------------------------ lookups
@@ -142,7 +139,8 @@ pub const Vault = struct {
     /// it's owned by the store.
     pub fn secret(v: *Vault, project_name: []const u8, workspace_name: []const u8, secret_name: []const u8) ?[]const u8 {
         const w = v.workspace(project_name, workspace_name) orelse return null;
-        return w.secrets.get(secret_name);
+        const x = w.secrets.get(secret_name) orelse return null;
+        return x.value;
     }
 
     // ----------------------------------------------------------- projects
@@ -154,31 +152,38 @@ pub const Vault = struct {
         if (v.store.projects.contains(name)) return error.Exists;
         const dup_desc = try v.gpa.dupe(u8, description);
         errdefer v.gpa.free(dup_desc);
-        const p = try v.projectOrCreate(name);
+        const p = try v.projectOrCreate(name, v.stamp());
         v.gpa.free(p.description);
         p.description = dup_desc;
     }
 
     /// Renames a project in place (it keeps its position) and sets its
-    /// description.
+    /// description. A rename is the old path's deletion and a new project.
     pub fn updateProject(v: *Vault, old_name: []const u8, new_name: []const u8, description: []const u8) !void {
         try checkName(new_name);
         if (!std.unicode.utf8ValidateSlice(description)) return error.InvalidUtf8;
         const index = v.store.projects.getIndex(old_name) orelse return error.NotFound;
-        if (!std.mem.eql(u8, old_name, new_name) and v.store.projects.contains(new_name)) return error.Exists;
+        const renaming = !std.mem.eql(u8, old_name, new_name);
+        if (renaming and v.store.projects.contains(new_name)) return error.Exists;
         const dup_desc = try v.gpa.dupe(u8, description);
         errdefer v.gpa.free(dup_desc);
-        try renameKey(v.gpa, &v.store.projects, index, new_name);
+        const st = v.stamp();
+        if (renaming) {
+            try v.store.bury(v.gpa, old_name, st);
+            try renameKey(v.gpa, &v.store.projects, index, new_name);
+        }
         const p = &v.store.projects.values()[index];
         v.gpa.free(p.description);
         p.description = dup_desc;
+        if (renaming) restampProject(p, st) else p.stamp = st;
     }
 
     pub fn removeProject(v: *Vault, name: []const u8) bool {
         const kv = v.store.projects.fetchOrderedRemove(name) orelse return false;
         v.gpa.free(kv.key);
         var p = kv.value;
-        freeProject(v.gpa, &p);
+        store.freeProject(v.gpa, &p);
+        v.store.bury(v.gpa, name, v.stamp()) catch {}; // OOM: the removal stays local
         return true;
     }
 
@@ -188,7 +193,7 @@ pub const Vault = struct {
         try checkName(name);
         const p = v.project(project_name) orelse return error.NotFound;
         if (p.workspaces.contains(name)) return error.Exists;
-        _ = try workspaceOrCreate(v.gpa, p, name);
+        _ = try store.workspaceOrCreate(v.gpa, p, name, v.stamp());
     }
 
     pub fn renameWorkspace(v: *Vault, project_name: []const u8, old_name: []const u8, new_name: []const u8) !void {
@@ -196,8 +201,13 @@ pub const Vault = struct {
         if (isDefault(old_name) or isDefault(new_name)) return error.DefaultWorkspace;
         const p = v.project(project_name) orelse return error.NotFound;
         const index = p.workspaces.getIndex(old_name) orelse return error.NotFound;
-        if (!std.mem.eql(u8, old_name, new_name) and p.workspaces.contains(new_name)) return error.Exists;
+        if (std.mem.eql(u8, old_name, new_name)) return;
+        if (p.workspaces.contains(new_name)) return error.Exists;
+        const st = v.stamp();
+        var buf: [3 * 129]u8 = undefined;
+        try v.store.bury(v.gpa, store.join(&buf, &.{ project_name, old_name }), st);
         try renameKey(v.gpa, &p.workspaces, index, new_name);
+        restampWorkspace(&p.workspaces.values()[index], st);
     }
 
     /// False when it doesn't exist. The default workspace is never
@@ -208,7 +218,9 @@ pub const Vault = struct {
         const kv = p.workspaces.fetchOrderedRemove(name) orelse return false;
         v.gpa.free(kv.key);
         var w = kv.value;
-        freeSecrets(v.gpa, &w.secrets);
+        store.freeSecrets(v.gpa, &w.secrets);
+        var buf: [3 * 129]u8 = undefined;
+        v.store.bury(v.gpa, store.join(&buf, &.{ project_name, name }), v.stamp()) catch {};
         return true;
     }
 
@@ -223,18 +235,19 @@ pub const Vault = struct {
         if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidUtf8; // JSON copy must stay valid
         const dup_value = try v.gpa.dupe(u8, value);
         errdefer v.gpa.free(dup_value);
-        const p = try v.projectOrCreate(project_name);
-        const w = try workspaceOrCreate(v.gpa, p, workspace_name);
+        const st = v.stamp();
+        const p = try v.projectOrCreate(project_name, st);
+        const w = try store.workspaceOrCreate(v.gpa, p, workspace_name, st);
         const gop = try w.secrets.getOrPut(v.gpa, secret_name);
         if (gop.found_existing) {
-            v.gpa.free(gop.value_ptr.*);
+            store.freeSecret(v.gpa, gop.value_ptr.*);
         } else {
             gop.key_ptr.* = v.gpa.dupe(u8, secret_name) catch |e| {
                 w.secrets.swapRemoveAt(gop.index);
                 return e;
             };
         }
-        gop.value_ptr.* = dup_value;
+        gop.value_ptr.* = .{ .value = dup_value, .stamp = st };
     }
 
     /// Writes a secret of an existing workspace, renaming it first when
@@ -248,7 +261,11 @@ pub const Vault = struct {
         if (old_name.len > 0) {
             // An edit of a secret removed meanwhile must not bring it back.
             const index = w.secrets.getIndex(old_name) orelse return error.NotFound;
-            if (renaming) try renameKey(v.gpa, &w.secrets, index, new_name);
+            if (renaming) {
+                var buf: [3 * 129]u8 = undefined;
+                try v.store.bury(v.gpa, store.join(&buf, &.{ project_name, workspace_name, old_name }), v.stamp());
+                try renameKey(v.gpa, &w.secrets, index, new_name);
+            }
         }
         try v.setSecret(project_name, workspace_name, new_name, value);
     }
@@ -257,19 +274,21 @@ pub const Vault = struct {
         const w = v.workspace(project_name, workspace_name) orelse return false;
         const kv = w.secrets.fetchOrderedRemove(secret_name) orelse return false;
         v.gpa.free(kv.key);
-        v.gpa.free(kv.value);
+        store.freeSecret(v.gpa, kv.value);
+        var buf: [3 * 129]u8 = undefined;
+        v.store.bury(v.gpa, store.join(&buf, &.{ project_name, workspace_name, secret_name }), v.stamp()) catch {};
         return true;
     }
 
-    fn projectOrCreate(v: *Vault, name: []const u8) !*Project {
+    fn projectOrCreate(v: *Vault, name: []const u8, st: Stamp) !*Project {
         const gop = try v.store.projects.getOrPut(v.gpa, name);
         if (!gop.found_existing) {
             gop.key_ptr.* = v.gpa.dupe(u8, name) catch |e| {
                 v.store.projects.swapRemoveAt(gop.index);
                 return e;
             };
-            gop.value_ptr.* = .{};
-            ensureDefault(v.gpa, gop.value_ptr) catch |e| {
+            gop.value_ptr.* = .{ .stamp = st };
+            store.ensureDefault(v.gpa, gop.value_ptr) catch |e| {
                 v.gpa.free(gop.key_ptr.*);
                 v.store.projects.swapRemoveAt(gop.index);
                 return e;
@@ -282,112 +301,38 @@ pub const Vault = struct {
 
     pub fn save(v: *Vault) !void {
         assert(v.mode == .write and v.lock != null);
-        const plain = try v.marshal();
-        defer {
-            std.crypto.secureZero(u8, plain);
-            v.gpa.free(plain);
-        }
-
-        const total = nonce_len + plain.len + tag_len;
-        const sealed = try v.gpa.alloc(u8, total);
+        const sealed = try seal(v.gpa, v.io, v.key, &v.store);
         defer v.gpa.free(sealed);
-
-        var nonce: [nonce_len]u8 = undefined;
-        v.io.random(&nonce);
-        const ciphertext = sealed[nonce_len .. nonce_len + plain.len];
-        var tag: [tag_len]u8 = undefined;
-        Aes.encrypt(ciphertext, &tag, plain, vault_ad, nonce, v.key);
-
-        @memcpy(sealed[0..nonce_len], &nonce);
-        @memcpy(sealed[sealed.len - tag_len ..], &tag);
-
-        const vault_path = try v.path(vault_file);
-        defer v.gpa.free(vault_path);
-        // Temp file, synced, renamed over the vault, directory synced: a
-        // crash at any point leaves the old vault or the new one, never a
-        // file whose data didn't reach the disk. The lock makes the temp
-        // name ours alone.
-        const tmp_path = try std.fmt.allocPrint(v.gpa, "{s}.tmp", .{vault_path});
-        defer v.gpa.free(tmp_path);
-        {
-            const f = try v.dir.createFile(v.io, tmp_path, .{ .permissions = owner_only });
-            defer f.close(v.io);
-            try f.writeStreamingAll(v.io, sealed);
-            try f.sync(v.io);
-        }
-        try v.dir.rename(tmp_path, v.dir, vault_path, v.io);
-        try syncDir(v.io, v.dir_path);
+        try writeAtomic(v.io, v.gpa, v.dir_path, vault_file, sealed);
     }
 
-    fn path(v: *Vault, name: []const u8) ![]u8 {
-        return std.fs.path.join(v.gpa, &.{ v.dir_path, name });
+    /// Re-seals the vault with `key` and makes it the vault's key (a
+    /// machine joining a shared vault). Crash-safe in two steps: the new
+    /// key goes to master.key.next, the vault is saved with it, then
+    /// master.key.next replaces master.key; `open` finishes a rekey a
+    /// crash interrupted (the vault opens with .next, not master.key).
+    pub fn rekey(v: *Vault, key: [key_len]u8) !void {
+        assert(v.mode == .write and v.lock != null);
+        try writeAtomic(v.io, v.gpa, v.dir_path, next_key_file, &key);
+        v.key = key;
+        try v.save();
+        try finishRekey(v.io, v.gpa, v.dir_path);
     }
 
-    fn marshal(v: *Vault) ![]u8 {
-        var out: std.Io.Writer.Allocating = .init(v.gpa);
-        errdefer out.deinit();
-        var js: std.json.Stringify = .{ .writer = &out.writer };
-        try js.beginObject();
-        try js.objectField("version");
-        try js.write(store_version);
-        try js.objectField("projects");
-        try js.beginObject();
-        for (v.store.projects.keys(), v.store.projects.values()) |name, p| {
-            try js.objectField(name);
-            try js.beginObject();
-            try js.objectField("description");
-            try js.write(p.description);
-            try js.objectField("workspaces");
-            try js.beginObject();
-            for (p.workspaces.keys(), p.workspaces.values()) |w_name, w| {
-                try js.objectField(w_name);
-                try js.beginObject();
-                try js.objectField("secrets");
-                try js.beginObject();
-                for (w.secrets.keys(), w.secrets.values()) |s_name, s_value| {
-                    try js.objectField(s_name);
-                    try js.write(s_value);
-                }
-                try js.endObject();
-                try js.endObject();
-            }
-            try js.endObject();
-            try js.endObject();
-        }
-        try js.endObject();
-        try js.endObject();
-        return out.toOwnedSlice();
+    pub fn marshal(v: *Vault) ![]u8 {
+        return store.marshal(v.gpa, &v.store);
     }
 };
 
-/// Puts the default workspace first, creating it if missing.
-fn ensureDefault(gpa: std.mem.Allocator, p: *Project) !void {
-    if (p.workspaces.getIndex(default_workspace)) |i| if (i == 0) return;
-    var reordered: std.StringArrayHashMapUnmanaged(Workspace) = .{};
-    errdefer reordered.deinit(gpa);
-    try reordered.ensureTotalCapacity(gpa, p.workspaces.count() + 1);
-    if (p.workspaces.get(default_workspace)) |w| {
-        reordered.putAssumeCapacity(p.workspaces.getKey(default_workspace).?, w);
-    } else {
-        reordered.putAssumeCapacity(try gpa.dupe(u8, default_workspace), .{});
-    }
-    for (p.workspaces.keys(), p.workspaces.values()) |k, w| {
-        if (!isDefault(k)) reordered.putAssumeCapacity(k, w);
-    }
-    p.workspaces.deinit(gpa);
-    p.workspaces = reordered;
+/// Every entry of a renamed project is new: stamped `st`.
+fn restampProject(p: *Project, st: Stamp) void {
+    p.stamp = st;
+    for (p.workspaces.values()) |*w| restampWorkspace(w, st);
 }
 
-fn workspaceOrCreate(gpa: std.mem.Allocator, p: *Project, name: []const u8) !*Workspace {
-    const gop = try p.workspaces.getOrPut(gpa, name);
-    if (!gop.found_existing) {
-        gop.key_ptr.* = gpa.dupe(u8, name) catch |e| {
-            p.workspaces.swapRemoveAt(gop.index);
-            return e;
-        };
-        gop.value_ptr.* = .{};
-    }
-    return gop.value_ptr;
+fn restampWorkspace(w: *Workspace, st: Stamp) void {
+    w.stamp = st;
+    for (w.secrets.values()) |*x| x.stamp = st;
 }
 
 /// Renames the entry at `index` in place, keeping its position.
@@ -405,13 +350,58 @@ fn renameKey(gpa: std.mem.Allocator, map: anytype, index: usize, new_name: []con
     gpa.free(old);
 }
 
-fn freeProject(gpa: std.mem.Allocator, p: *Project) void {
-    gpa.free(p.description);
-    for (p.workspaces.keys(), p.workspaces.values()) |k, *w| {
-        gpa.free(k);
-        freeSecrets(gpa, &w.secrets);
+// ------------------------------------------------------------------- seal
+
+/// `s` as vault.json, sealed with `key`: nonce || ciphertext || tag.
+pub fn seal(gpa: std.mem.Allocator, io: std.Io, key: [key_len]u8, s: *const Store) ![]u8 {
+    const plain = try store.marshal(gpa, s);
+    defer {
+        std.crypto.secureZero(u8, plain);
+        gpa.free(plain);
     }
-    p.workspaces.deinit(gpa);
+    const sealed = try gpa.alloc(u8, nonce_len + plain.len + tag_len);
+    errdefer gpa.free(sealed);
+    var nonce: [nonce_len]u8 = undefined;
+    io.random(&nonce);
+    var tag: [tag_len]u8 = undefined;
+    Aes.encrypt(sealed[nonce_len .. nonce_len + plain.len], &tag, plain, vault_ad, nonce, key);
+    @memcpy(sealed[0..nonce_len], &nonce);
+    @memcpy(sealed[sealed.len - tag_len ..], &tag);
+    return sealed;
+}
+
+/// The store sealed in `sealed`; error.CorruptVault when `key` doesn't
+/// open it or the JSON is damaged.
+pub fn unseal(gpa: std.mem.Allocator, key: [key_len]u8, sealed: []const u8) !Store {
+    if (sealed.len < nonce_len + tag_len) return error.CorruptVault;
+    const ciphertext = sealed[nonce_len .. sealed.len - tag_len];
+    const tag = sealed[sealed.len - tag_len ..][0..tag_len].*;
+    const nonce = sealed[0..nonce_len].*;
+    const plain = try gpa.alloc(u8, ciphertext.len);
+    defer {
+        std.crypto.secureZero(u8, plain);
+        gpa.free(plain);
+    }
+    Aes.decrypt(plain, ciphertext, tag, vault_ad, nonce, key) catch return error.CorruptVault;
+    return store.unmarshal(gpa, plain);
+}
+
+/// Writes `dir_path/name` through a synced temp file and a rename, then
+/// syncs the directory: a crash leaves the old file or the new one.
+fn writeAtomic(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8, name: []const u8, data: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    const path = try std.fs.path.join(gpa, &.{ dir_path, name });
+    defer gpa.free(path);
+    const tmp_path = try std.fmt.allocPrint(gpa, "{s}.tmp", .{path});
+    defer gpa.free(tmp_path);
+    {
+        const f = try cwd.createFile(io, tmp_path, .{ .permissions = owner_only });
+        defer f.close(io);
+        try f.writeStreamingAll(io, data);
+        try f.sync(io);
+    }
+    try cwd.rename(tmp_path, cwd, path, io);
+    try syncDir(io, dir_path);
 }
 
 fn syncDir(io: std.Io, path: []const u8) !void {
@@ -421,15 +411,6 @@ fn syncDir(io: std.Io, path: []const u8) !void {
     defer dir.close(io);
     const f: std.Io.File = .{ .handle = dir.handle, .flags = .{ .nonblocking = false } };
     try f.sync(io);
-}
-
-fn freeSecrets(gpa: std.mem.Allocator, secrets: *Secrets) void {
-    for (secrets.keys(), secrets.values()) |k, val| {
-        gpa.free(k);
-        std.crypto.secureZero(u8, @constCast(val));
-        gpa.free(val);
-    }
-    secrets.deinit(gpa);
 }
 
 // -------------------------------------------------------------- addresses
@@ -645,6 +626,7 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
         .key = undefined,
         .store = .{},
         .mode = mode,
+        .clock_ms = std.Io.Clock.real.now(io).toMilliseconds(),
     };
     errdefer gpa.free(v.dir_path);
 
@@ -658,6 +640,8 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
     var keep_lock = false;
     defer if (!keep_lock) lock.close(io);
 
+    v.device = try loadDevice(io, gpa, v.dir_path, mode);
+
     const key_path = try std.fs.path.join(gpa, &.{ v.dir_path, key_file });
     defer gpa.free(key_path);
     if (!try loadKey(&v, key_path)) {
@@ -670,7 +654,16 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
     defer gpa.free(vault_path);
     if (v.dir.readFileAlloc(io, vault_path, gpa, .limited(64 << 20))) |sealed| {
         defer gpa.free(sealed);
-        v.store = try unseal(&v, sealed);
+        v.store = unseal(gpa, v.key, sealed) catch |e| store: {
+            // A rekey interrupted after the vault was sealed with the new key.
+            if (e != error.CorruptVault) return e;
+            const next = try loadNextKey(io, gpa, v.dir_path) orelse return e;
+            const s = try unseal(gpa, next, sealed);
+            v.key = next;
+            if (mode == .write) try finishRekey(io, gpa, v.dir_path);
+            break :store s;
+        };
+        v.high = v.store.high();
     } else |e| {
         if (e != error.FileNotFound) return e;
     }
@@ -681,18 +674,43 @@ pub fn open(io: std.Io, gpa: std.mem.Allocator, data_path: []const u8, mode: Mod
     return v;
 }
 
-fn unseal(v: *Vault, sealed: []const u8) !Store {
-    if (sealed.len < nonce_len + tag_len) return error.CorruptVault;
-    const ciphertext = sealed[nonce_len .. sealed.len - tag_len];
-    const tag = sealed[sealed.len - tag_len ..][0..tag_len].*;
-    const nonce = sealed[0..nonce_len].*;
-    const plain = try v.gpa.alloc(u8, ciphertext.len);
+/// This machine's device id from config.json; a write open makes one the
+/// first time (under the lock, so two first runs can't race).
+fn loadDevice(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8, mode: Mode) !u64 {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var cfg = config.load(io, arena.allocator(), dir_path) catch config.Config{};
+    if (cfg.deviceId() != 0 or mode == .read) return cfg.deviceId();
+    var buf: [16]u8 = undefined;
+    cfg.device = config.newDevice(io, &buf);
+    try config.save(io, gpa, dir_path, cfg);
+    return cfg.deviceId();
+}
+
+/// master.key.next, when a rekey left one.
+fn loadNextKey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !?[key_len]u8 {
+    const path = try std.fs.path.join(gpa, &.{ dir_path, next_key_file });
+    defer gpa.free(path);
+    const k = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(64)) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
     defer {
-        std.crypto.secureZero(u8, plain);
-        v.gpa.free(plain);
+        std.crypto.secureZero(u8, k);
+        gpa.free(k);
     }
-    Aes.decrypt(plain, ciphertext, tag, vault_ad, nonce, v.key) catch return error.CorruptVault;
-    return unmarshal(plain, v.gpa);
+    if (k.len != key_len) return null;
+    return k[0..key_len].*;
+}
+
+fn finishRekey(io: std.Io, gpa: std.mem.Allocator, dir_path: []const u8) !void {
+    const cwd = std.Io.Dir.cwd();
+    const next = try std.fs.path.join(gpa, &.{ dir_path, next_key_file });
+    defer gpa.free(next);
+    const key = try std.fs.path.join(gpa, &.{ dir_path, key_file });
+    defer gpa.free(key);
+    try cwd.rename(next, cwd, key, io);
+    try syncDir(io, dir_path);
 }
 
 /// Reads master.key into `v.key`; false when there is none yet.
@@ -729,94 +747,113 @@ fn makeKey(v: *Vault, key_path: []const u8) !void {
     try syncDir(v.io, v.dir_path);
 }
 
-/// The store from its JSON. Allocations are meant for an arena: on a
-/// corrupt document, what was built so far is not freed.
-fn unmarshal(plain: []const u8, gpa: std.mem.Allocator) !Store {
-    var parsed = std.json.parseFromSlice(std.json.Value, gpa, plain, .{}) catch return error.CorruptVault;
-    defer parsed.deinit();
-    const root = parsed.value;
-    if (root != .object) return error.CorruptVault;
-    const version: i64 = switch (root.object.get("version") orelse return error.CorruptVault) {
-        .integer => |i| i,
-        else => return error.CorruptVault,
-    };
-    if (version != 1 and version != 2) return error.CorruptVault;
-    const projects = root.object.get("projects") orelse return error.CorruptVault;
-    if (projects != .object) return error.CorruptVault;
-
-    var store: Store = .{};
-    var p_it = projects.object.iterator();
-    while (p_it.next()) |p_entry| {
-        const p_obj = p_entry.value_ptr.*;
-        if (p_obj != .object) return error.CorruptVault;
-        var p: Project = .{};
-        if (p_obj.object.get("description")) |d| {
-            if (d == .string) p.description = try gpa.dupe(u8, d.string);
-        }
-        if (version == 1) {
-            // Secrets straight under the project: its `default` workspace.
-            if (p_obj.object.get("secrets")) |secrets| {
-                const w = try workspaceOrCreate(gpa, &p, default_workspace);
-                try readSecrets(gpa, secrets, &w.secrets);
-            }
-        } else if (p_obj.object.get("workspaces")) |workspaces| {
-            if (workspaces != .object) return error.CorruptVault;
-            var w_it = workspaces.object.iterator();
-            while (w_it.next()) |w_entry| {
-                const w_obj = w_entry.value_ptr.*;
-                if (w_obj != .object) return error.CorruptVault;
-                const w = try workspaceOrCreate(gpa, &p, w_entry.key_ptr.*);
-                if (w_obj.object.get("secrets")) |secrets| try readSecrets(gpa, secrets, &w.secrets);
-            }
-        }
-        try ensureDefault(gpa, &p);
-        try store.projects.put(gpa, try gpa.dupe(u8, p_entry.key_ptr.*), p);
-    }
-    return store;
+/// A vault in memory, for tests: no file, no lock.
+fn testVault(a: std.mem.Allocator) Vault {
+    return .{ .gpa = a, .io = undefined, .dir = undefined, .dir_path = "", .key = undefined, .store = .{}, .mode = .write, .device = 1, .clock_ms = 1000 };
 }
 
-fn readSecrets(gpa: std.mem.Allocator, value: std.json.Value, out: *Secrets) !void {
-    if (value != .object) return error.CorruptVault;
-    var it = value.object.iterator();
-    while (it.next()) |entry| {
-        if (entry.value_ptr.* != .string) return error.CorruptVault;
-        try out.put(gpa, try gpa.dupe(u8, entry.key_ptr.*), try gpa.dupe(u8, entry.value_ptr.string));
-    }
-}
-
-test "v1 vaults open with their secrets in a default workspace" {
+test "operations round-trip through the JSON" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    var store = try unmarshal(
-        \\{"version":1,"projects":{"hub":{"description":"d","secrets":{"K":"v"}}}}
-    , a);
-    const p = store.projects.getPtr("hub").?;
-    try std.testing.expectEqualStrings("d", p.description);
-    try std.testing.expectEqualStrings("v", p.workspaces.get(default_workspace).?.secrets.get("K").?);
-}
-
-test "workspaces round-trip through the JSON" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    var v: Vault = .{ .gpa = a, .io = undefined, .dir = undefined, .dir_path = "", .key = undefined, .store = .{}, .mode = .write };
+    var v = testVault(a);
     try v.createProject("hub", "Pantahub");
     try v.createWorkspace("hub", "stage");
     try v.setSecret("hub", "stage", "TOKEN", "s3cret");
     try v.setSecret("hub", "prod", "TOKEN", "p");
     try v.updateSecret("hub", "stage", "TOKEN", "API_TOKEN", "s3cret2");
     try v.renameWorkspace("hub", "prod", "production");
-    const json = try v.marshal();
-    var back = try unmarshal(json, a);
+    var back = try store.unmarshal(a, try v.marshal());
     const p = back.projects.getPtr("hub").?;
-    try std.testing.expectEqualStrings("s3cret2", p.workspaces.get("stage").?.secrets.get("API_TOKEN").?);
-    try std.testing.expectEqualStrings("p", p.workspaces.get("production").?.secrets.get("TOKEN").?);
+    try std.testing.expectEqualStrings("s3cret2", p.workspaces.get("stage").?.secrets.get("API_TOKEN").?.value);
+    try std.testing.expectEqualStrings("p", p.workspaces.get("production").?.secrets.get("TOKEN").?.value);
     try std.testing.expectEqual(@as(usize, 2), p.secretCount());
     try std.testing.expectEqualStrings(default_workspace, p.workspaces.keys()[0]);
+    // Renames and removals leave tombstones, for the merge.
+    try std.testing.expect(back.tombs.get("hub/prod") != null);
+    try std.testing.expect(back.tombs.get("hub/stage/TOKEN") != null);
     try std.testing.expectError(error.DefaultWorkspace, v.renameWorkspace("hub", default_workspace, "x"));
     try std.testing.expect(v.removeWorkspace("hub", "stage"));
     try std.testing.expect(v.removeProject("hub"));
+    try std.testing.expect(v.store.tombs.get("hub") != null);
+}
+
+test "stamps only move forward, even behind a newer stamp from another machine" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var v = testVault(arena.allocator());
+    v.high = .{ .t = 5000, .d = 9 }; // from a machine whose clock is ahead
+    const s1 = v.stamp();
+    const s2 = v.stamp();
+    try std.testing.expect(s1.newer(.{ .t = 5000, .d = 9 }));
+    try std.testing.expect(s2.newer(s1));
+    try std.testing.expectEqual(@as(u64, 1), s2.d);
+}
+
+test "editing a secret removed meanwhile is NotFound, not a re-add" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var v = testVault(arena.allocator());
+    try v.setSecret("hub", default_workspace, "K", "v");
+    try std.testing.expect(v.removeSecret("hub", default_workspace, "K"));
+    try std.testing.expectError(error.NotFound, v.updateSecret("hub", default_workspace, "K", "K", "v2"));
+    try std.testing.expectError(error.NotFound, v.updateSecret("hub", default_workspace, "K", "K2", "v2"));
+    try std.testing.expect(v.secret("hub", default_workspace, "K") == null);
+    try std.testing.expectError(error.InvalidVarName, v.setSecret("hub", default_workspace, "A=B", "x"));
+}
+
+test "seal and unseal; the wrong key is CorruptVault" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var v = testVault(a);
+    try v.setSecret("hub", default_workspace, "K", "v");
+    var key: [key_len]u8 = @splat(7);
+    const sealed = try seal(a, io, key, &v.store);
+    const back = try unseal(a, key, sealed);
+    try std.testing.expectEqualStrings("v", back.projects.get("hub").?.workspaces.get(default_workspace).?.secrets.get("K").?.value);
+    key[0] ^= 1;
+    try std.testing.expectError(error.CorruptVault, unseal(a, key, sealed));
+}
+
+test "rekey re-seals with the new key, and open finishes an interrupted one" {
+    const testing = std.testing;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    const new_key: [key_len]u8 = @splat(9);
+    {
+        var v = try open(io, testing.allocator, path, .write);
+        defer v.close();
+        try v.setSecret("hub", default_workspace, "K", "v");
+        try v.save();
+        try v.rekey(new_key);
+    }
+    {
+        var v = try open(io, testing.allocator, path, .read);
+        defer v.close();
+        try testing.expectEqual(new_key, v.key);
+        try testing.expectEqualStrings("v", v.secret("hub", default_workspace, "K").?);
+    }
+    // Interrupted: the vault sealed with a newer key, master.key still the old one.
+    const newer: [key_len]u8 = @splat(5);
+    {
+        var v = try open(io, testing.allocator, path, .write);
+        defer v.close();
+        try writeAtomic(io, testing.allocator, path, next_key_file, &newer);
+        v.key = newer;
+        try v.save(); // ...and the crash comes before finishRekey
+    }
+    {
+        var v = try open(io, testing.allocator, path, .write);
+        defer v.close();
+        try testing.expectEqual(newer, v.key);
+        try testing.expectEqualStrings("v", v.secret("hub", default_workspace, "K").?);
+    }
+    try testing.expectError(error.FileNotFound, tmp.dir.statFile(io, next_key_file, .{}));
 }
 
 test "open, save and reopen on disk; edits hold the lock; insecure keys are refused" {
@@ -837,6 +874,7 @@ test "open, save and reopen on disk; edits hold the lock; insecure keys are refu
     {
         var v = try open(io, testing.allocator, path, .write);
         defer v.close();
+        try testing.expect(v.device != 0); // made on the first write open
         try v.setSecret("hub", "stage", "TOKEN", "s3cret");
         try v.save();
         // Another writer can't get in while this one is open.
@@ -849,6 +887,7 @@ test "open, save and reopen on disk; edits hold the lock; insecure keys are refu
         defer v.close();
         try testing.expectEqualStrings("s3cret", v.secret("hub", "stage", "TOKEN").?);
         try testing.expect(v.lock == null);
+        try testing.expect(v.high.t > 0);
     }
     // Windows has no mode bits to get wrong.
     if (comptime builtin.os.tag != .windows) {
@@ -857,16 +896,4 @@ test "open, save and reopen on disk; edits hold the lock; insecure keys are refu
         try key.setPermissions(io, .fromMode(0o644));
         try testing.expectError(error.InsecureKey, open(io, testing.allocator, path, .read));
     }
-}
-
-test "editing a secret removed meanwhile is NotFound, not a re-add" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var v: Vault = .{ .gpa = arena.allocator(), .io = undefined, .dir = undefined, .dir_path = "", .key = undefined, .store = .{}, .mode = .write };
-    try v.setSecret("hub", default_workspace, "K", "v");
-    try std.testing.expect(v.removeSecret("hub", default_workspace, "K"));
-    try std.testing.expectError(error.NotFound, v.updateSecret("hub", default_workspace, "K", "K", "v2"));
-    try std.testing.expectError(error.NotFound, v.updateSecret("hub", default_workspace, "K", "K2", "v2"));
-    try std.testing.expect(v.secret("hub", default_workspace, "K") == null);
-    try std.testing.expectError(error.InvalidVarName, v.setSecret("hub", default_workspace, "A=B", "x"));
 }

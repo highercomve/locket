@@ -38,7 +38,7 @@ pub fn sid(comptime name: []const u8) i64 {
 }
 
 /// The shell's text fields (Enter goes to the one that last had focus).
-pub const fields = [_][]const u8{ "new-project", "project-name", "project-desc", "new-workspace", "ws-name", "secret-name", "secret-value" };
+pub const fields = [_][]const u8{ "new-project", "project-name", "project-desc", "new-workspace", "ws-name", "secret-name", "secret-value", "sync-path", "sync-pass", "sync-pass2" };
 
 pub fn isField(node: i64) bool {
     inline for (fields) |name| {
@@ -94,6 +94,9 @@ pub const focus_timer: u32 = 1;
 
 pub var io: std.Io = undefined;
 pub var data_path: []const u8 = "";
+/// NomadFS's default swarm folder here ("" when the platform has none),
+/// found once at start: worker threads don't read the environment.
+pub var default_swarm: []const u8 = "";
 pub var s: State = .{};
 
 pub fn isSelected(selected: ?[]const u8, name: []const u8) bool {

@@ -64,3 +64,19 @@ pub fn setField(e: *ui.Engine, node: i64, value: []const u8) !void {
 pub fn focus(e: *ui.Engine, node: i64) void {
     if (e.tree.get(node)) |n| e.backend.focus(e.backend.ctx, n);
 }
+
+/// A choice button's look: amber when chosen, quiet otherwise.
+pub fn choose(e: *ui.Engine, node: i64, on: bool) !void {
+    var props = e.tree.get(node).?.props;
+    const ink = if (on) oriel.canvas.rgb(0xf6b042) else oriel.canvas.rgb(0xa99f8f);
+    props.bg = .{ .color = if (on) oriel.canvas.rgba(0xf6b042, 0.12) else oriel.canvas.rgba(0xf2e8d8, 0.03) };
+    const edge = if (on) oriel.canvas.rgba(0xf6b042, 0.55) else oriel.canvas.rgba(0xf2e8d8, 0.15);
+    props.bc = .{ edge, edge, edge, edge };
+    props.col = ink;
+    if (props.runs) |runs| if (runs.len == 1) {
+        var run = runs[0];
+        run.c = ink;
+        props.runs = &.{run};
+    };
+    try e.tree.updateUiProps(node, props);
+}

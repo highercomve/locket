@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
     // zig build test: the vault core, the CLI and the window's input
     // decoding (the files that don't need a window to run).
     const test_step = b.step("test", "Run the unit tests");
-    for ([_][]const u8{ "src/vault.zig", "src/cli.zig", "src/update_errors.zig", "src/desktop/input.zig" }) |path| {
+    for ([_][]const u8{ "src/vault.zig", "src/sync.zig", "src/cli.zig", "src/cli_sync.zig", "src/update_errors.zig", "src/desktop/input.zig" }) |path| {
         const t = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -120,7 +120,8 @@ pub fn build(b: *std.Build) void {
         .roots = &.{"src"},
         .layers = &.{
             .{ .name = "app", .paths = &.{ "src/main.zig", "src/cli_main.zig" }, .thin = true },
-            .{ .name = "front", .paths = &.{ "src/cli.zig", "src/update.zig", "src/update_errors.zig", "src/desktop" } },
+            .{ .name = "front", .paths = &.{ "src/cli.zig", "src/cli_sync.zig", "src/update.zig", "src/update_errors.zig", "src/desktop" } },
+            .{ .name = "sync", .paths = &.{ "src/sync.zig", "src/sync" } },
             .{ .name = "core", .paths = &.{"src"} },
         },
         // core is the foundation; nothing imports up. Redundant: layers

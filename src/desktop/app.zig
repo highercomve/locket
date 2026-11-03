@@ -15,6 +15,7 @@ const w = @import("widgets.zig");
 const input = @import("input.zig");
 const view = @import("render.zig");
 const update_ui = @import("update_ui.zig");
+const sync_ui = @import("sync_ui.zig");
 
 const ui = oriel.ui;
 const sid = st.sid;
@@ -37,10 +38,14 @@ pub fn boot(e: *ui.Engine) !void {
     e.tree.root = e.tree.get(st.shell_base);
     try render(e);
     try update_ui.start(e);
+    try sync_ui.start(e);
 }
 
-/// Answers to commands the window invoked (the update commands).
-pub const resolved = update_ui.resolved;
+/// Answers to commands the window invoked: updates and sync.
+pub fn resolved(e: *ui.Engine, req_id: u32, ok: bool, json: []const u8) !void {
+    if (sync_ui.owns(req_id)) return sync_ui.resolved(e, req_id, ok, json);
+    return update_ui.resolved(e, req_id, ok, json);
+}
 
 pub fn event(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) bool {
     return handle(e, node, kind, data) catch |err| {
@@ -52,6 +57,7 @@ pub fn event(e: *ui.Engine, node: i64, kind: []const u8, data: []const u8) bool 
 }
 
 pub fn timer(e: *ui.Engine, timer_id: u32) !void {
+    if (timer_id == sync_ui.sync_timer) return sync_ui.tick(e);
     if (timer_id != st.focus_timer or s.pending_focus == 0) return;
     const node = s.pending_focus;
     s.pending_focus = 0;
@@ -66,6 +72,14 @@ const Action = *const fn (*ui.Engine) anyerror!bool;
 /// The shell's buttons and what each does.
 const clicks = .{
     .{ "reload", reload },
+    .{ "open-settings", sync_ui.openPage },
+    .{ "close-settings", sync_ui.closePage },
+    .{ "conn-nomadfs", sync_ui.chooseNomadfs },
+    .{ "conn-folder", sync_ui.chooseFolder },
+    .{ "sync-connect", sync_ui.connect },
+    .{ "sync-now", sync_ui.syncNow },
+    .{ "sync-stop", sync_ui.stopSync },
+    .{ "set-check", sync_ui.checkUpdates },
     .{ "version", update_ui.clickVersion },
     .{ "update", update_ui.clickUpdate },
     .{ "add-project", createProject },
@@ -86,6 +100,9 @@ const clicks = .{
 /// What Enter does in each field.
 const enters = .{
     .{ "new-project", createProject },
+    .{ "sync-path", sync_ui.pathEntered },
+    .{ "sync-pass", sync_ui.connect },
+    .{ "sync-pass2", sync_ui.connect },
     .{ "new-workspace", createWorkspace },
     .{ "ws-name", saveWorkspace },
     .{ "secret-name", saveSecret },
@@ -164,10 +181,13 @@ fn escape(e: *ui.Engine) !bool {
 fn commit(e: *ui.Engine, comptime change: anytype, args: anytype) !void {
     var arena = std.heap.ArenaAllocator.init(e.gpa);
     defer arena.deinit();
-    var v = try vault.open(st.io, arena.allocator(), st.data_path, .write);
-    defer v.close();
-    try @call(.auto, change, .{&v} ++ args);
-    try v.save();
+    {
+        var v = try vault.open(st.io, arena.allocator(), st.data_path, .write);
+        defer v.close();
+        try @call(.auto, change, .{&v} ++ args);
+        try v.save();
+    }
+    sync_ui.afterEdit(e); // a shared vault: share the edit now
 }
 
 /// A read of the vault for one look-up; `close` it when done.
