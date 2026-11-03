@@ -38,6 +38,11 @@ var open = false;
 /// The chosen backend: a connectors.kinds id (they're comptime strings).
 var kind: []const u8 = sync.connectors.kinds[0].id;
 var probe: Probe = .unknown;
+/// The path the probe was for: a field edited since needs a new one.
+var probed_buf: [std.fs.max_path_bytes]u8 = undefined;
+var probed: []const u8 = "";
+/// Connect was clicked before the probe answered: go on once it does.
+var connect_after_probe = false;
 var probe_message: []const u8 = "";
 var info: struct {
     shared: bool = false,
@@ -128,16 +133,21 @@ pub fn connect(e: *ui.Engine) !bool {
     const path = try w.field(e, fields.allocator(), sid("sync-path"));
     const pass = try fields.allocator().dupe(u8, w.fieldValue(e, sid("sync-pass")));
     defer std.crypto.secureZero(u8, pass);
+    // The field changed since the place was looked at (or it never was):
+    // look again, then go on with this click.
+    const fresh = std.mem.eql(u8, path, probed);
+    if (!fresh or (probe != .shared and probe != .empty)) {
+        connect_after_probe = true;
+        try startProbe(e);
+        return true;
+    }
     switch (probe) {
         .shared => {},
         .empty => {
             if (pass.len < sync.keywrap.min_passphrase) return statusFail(e, "The passphrase must be at least 8 characters.");
             if (!std.mem.eql(u8, pass, w.fieldValue(e, sid("sync-pass2")))) return statusFail(e, "The two passphrases differ.");
         },
-        else => {
-            try startProbe(e);
-            return true;
-        },
+        else => unreachable, // checked above
     }
     if (pass.len == 0) return statusFail(e, "Type the passphrase.");
     connecting = true;
@@ -181,6 +191,11 @@ pub fn resolved(e: *ui.Engine, req_id: u32, ok: bool, json: []const u8) !void {
             probe = std.meta.stringToEnum(Probe, p.value.state) orelse .unavailable;
             probe_message = try arena.allocator().dupe(u8, p.value.message);
             try paint(e);
+            // A click on Share / Join was waiting for this answer.
+            if (connect_after_probe) {
+                connect_after_probe = false;
+                if (probe == .shared or probe == .empty) _ = try connect(e);
+            }
         },
         .now, .setup, .join => {
             if (req == .now) syncing = false else connecting = false;
@@ -217,6 +232,12 @@ fn failed(e: *ui.Engine, req: Request, json: []const u8) !void {
             try busyText(e, "");
             view.status(e, message);
             try startProbe(e);
+        },
+        .probe => {
+            connect_after_probe = false;
+            probe = .unavailable;
+            probe_message = try arena.allocator().dupe(u8, message);
+            try paint(e);
         },
         else => view.status(e, message),
     }
@@ -309,6 +330,10 @@ fn startProbe(e: *ui.Engine) !void {
     defer fields.deinit();
     const path = try w.field(e, fields.allocator(), sid("sync-path"));
     probe = .checking;
+    probed = if (path.len <= probed_buf.len) blk: {
+        @memcpy(probed_buf[0..path.len], path);
+        break :blk probed_buf[0..path.len];
+    } else "";
     try paint(e);
     if (path.len == 0) {
         probe = .unavailable;

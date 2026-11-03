@@ -76,7 +76,8 @@ pub const Commands = struct {
 
     /// Whether there is a shared vault at a place (before setup or join).
     pub fn sync_probe(arena: std.mem.Allocator, args: Target) !Probe {
-        const shared = sync.isShared(st.io, arena, args.kind, args.location) catch |err| {
+        const location = try sync.connectors.expandHome(arena, args.location, st.home);
+        const shared = sync.isShared(st.io, arena, args.kind, location) catch |err| {
             return .{ .state = "unavailable", .message = sync.describe(err) orelse @errorName(err) };
         };
         return .{ .state = if (shared) "shared" else "empty" };
@@ -86,7 +87,8 @@ pub const Commands = struct {
         defer wipe(args.passphrase);
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
-        const r = sync.setup(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
+        const location = try sync.connectors.expandHome(arena, args.location, st.home);
+        const r = sync.setup(st.io, arena, st.data_path, args.kind, location, args.passphrase) catch |err| return fail(err);
         return .{ .pulled = r.pulled, .pushed = r.pushed, .copies = r.copies };
     }
 
@@ -94,7 +96,8 @@ pub const Commands = struct {
         defer wipe(args.passphrase);
         if (busy.swap(true, .acq_rel)) return oriel.ipc.fail("A sync is running: try again in a moment.", .{});
         defer busy.store(false, .release);
-        const r = sync.join(st.io, arena, st.data_path, args.kind, args.location, args.passphrase) catch |err| return fail(err);
+        const location = try sync.connectors.expandHome(arena, args.location, st.home);
+        const r = sync.join(st.io, arena, st.data_path, args.kind, location, args.passphrase) catch |err| return fail(err);
         return .{ .pulled = r.pulled, .pushed = r.pushed, .copies = r.copies };
     }
 

@@ -192,9 +192,17 @@ pub const NomadFs = struct {
     /// can't plant one that sends the vault to their own server.
     fn endpoint(n: *NomadFs, io: std.Io, arena: std.mem.Allocator) !Endpoint {
         if (!std.fs.path.isAbsolute(n.dir)) return error.FolderNotAbsolute;
-        const path = try std.fs.path.join(arena, &.{ n.dir, api_file });
+        // The node writes it next to its device keys: in the folder itself
+        // (the app's layout) or in its keys/ (the command line's).
+        var path = try std.fs.path.join(arena, &.{ n.dir, api_file });
         const st = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |e| switch (e) {
-            error.FileNotFound => return error.NomadFsNotRunning,
+            error.FileNotFound => blk: {
+                path = try std.fs.path.join(arena, &.{ n.dir, "keys", api_file });
+                break :blk std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |e2| switch (e2) {
+                    error.FileNotFound => return error.NomadFsNotRunning,
+                    else => return e2,
+                };
+            },
             else => return e,
         };
         if (st.kind != .file) return error.NomadFsInsecureApiFile;
@@ -324,4 +332,30 @@ test "a node that isn't running is NomadFsNotRunning" {
     defer arena.deinit();
     const c = try make(arena.allocator(), "/nonexistent/.nomadfs");
     try std.testing.expectError(error.NomadFsNotRunning, c.check(std.testing.io, std.testing.allocator));
+}
+
+test "api.json is found in the folder or in its keys/, and only when private" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const dir = try std.Io.Dir.cwd().realPathFileAlloc(io, try std.fmt.allocPrint(a, ".zig-cache/tmp/{s}", .{tmp.sub_path}), a);
+    var n: NomadFs = .{ .dir = dir };
+    try t.expectError(error.NomadFsNotRunning, n.endpoint(io, a));
+    // The command line node's layout: keys/api.json.
+    try tmp.dir.createDirPath(io, "keys");
+    const json = "{\"version\":1,\"url\":\"http://127.0.0.1:4321/tok/v1/\"}";
+    try tmp.dir.writeFile(io, .{ .sub_path = "keys/api.json", .data = json, .flags = .{ .permissions = .fromMode(0o600) } });
+    try t.expectEqual(@as(u16, 4321), (try n.endpoint(io, a)).port);
+    // The app's layout wins when both are there.
+    try tmp.dir.writeFile(io, .{ .sub_path = "api.json", .data = "{\"version\":1,\"url\":\"http://127.0.0.1:1234/tok/v1/\"}", .flags = .{ .permissions = .fromMode(0o600) } });
+    try t.expectEqual(@as(u16, 1234), (try n.endpoint(io, a)).port);
+    // Readable by others: not trusted.
+    try tmp.dir.deleteFile(io, "api.json");
+    try tmp.dir.writeFile(io, .{ .sub_path = "api.json", .data = json, .flags = .{ .permissions = .fromMode(0o644) } });
+    try t.expectError(error.NomadFsInsecureApiFile, n.endpoint(io, a));
 }

@@ -44,7 +44,7 @@ pub fn run(io: std.Io, arena: std.mem.Allocator, data_path: []const u8, env: any
             if (args.len < 2 or args.len > 3) return error.Usage;
             const kind = sync.connectors.find(args[1]) orelse return error.UnknownConnector;
             const location = if (args.len == 3)
-                args[2]
+                try sync.connectors.expandHome(arena, args[2], sync.connectors.homeDir(env))
             else
                 try sync.connectors.defaultLocation(kind.id, sync.connectors.homeDir(env), arena) orelse return error.Usage;
             const passphrase = try readPassphrase(io, arena, sub == .setup);

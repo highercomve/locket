@@ -80,6 +80,17 @@ pub fn defaultLocation(kind_id: []const u8, home: ?[]const u8, gpa: std.mem.Allo
     return k.defaultLocation(home, gpa);
 }
 
+/// `location` with a leading `~` or `~/` replaced by `home` (a field
+/// typed in the window isn't expanded by a shell). Anything else as is.
+pub fn expandHome(arena: std.mem.Allocator, location: []const u8, home: ?[]const u8) ![]const u8 {
+    const h = home orelse return location;
+    if (std.mem.eql(u8, location, "~")) return h;
+    if (location.len >= 2 and location[0] == '~' and (location[1] == '/' or location[1] == std.fs.path.sep)) {
+        return std.fs.path.join(arena, &.{ h, location[2..] });
+    }
+    return location;
+}
+
 /// The user's home folder, from the environment.
 pub fn homeDir(env: anytype) ?[]const u8 {
     return env.get(if (builtin.os.tag == .windows) "USERPROFILE" else "HOME");
@@ -93,6 +104,18 @@ fn makeFolder(arena: std.mem.Allocator, location: []const u8) anyerror!Connector
     const f = try arena.create(Folder);
     f.* = .{ .root = try arena.dupe(u8, location) };
     return f.connector();
+}
+
+test expandHome {
+    const a = std.testing.allocator;
+    const got = try expandHome(a, "~/.nomadfs/keys", "/home/me");
+    defer a.free(got);
+    std.mem.replaceScalar(u8, @constCast(got), std.fs.path.sep, '/');
+    try std.testing.expectEqualStrings("/home/me/.nomadfs/keys", got);
+    try std.testing.expectEqualStrings("/home/me", try expandHome(a, "~", "/home/me"));
+    try std.testing.expectEqualStrings("/abs", try expandHome(a, "/abs", "/home/me"));
+    try std.testing.expectEqualStrings("~other/x", try expandHome(a, "~other/x", "/home/me"));
+    try std.testing.expectEqualStrings("~/x", try expandHome(a, "~/x", null));
 }
 
 test make {

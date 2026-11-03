@@ -4,6 +4,24 @@ All notable changes to Locket. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
+## 0.2.1 - 2026-11-03
+
+Fixes for joining a shared vault from the desktop app.
+
+### Fixed
+
+- **Share / Join in Settings looks at the folder again when it changed.**
+  Editing the folder field and clicking the button used to only re-check
+  the folder, so joining took a second click. Now it checks, then shares or
+  joins.
+- **`~` in the folder field** (`~/.nomadfs/keys`) is your home folder, as
+  in a shell. It used to be refused as "not an absolute path".
+- **NomadFS's command line node works with the default folder.** The node
+  run as `nomadfs` keeps its device files in `~/.nomadfs/keys/`, and its
+  local API there too. Locket now looks in `<folder>/keys/` when
+  `<folder>/api.json` isn't there, so `~/.nomadfs` works for the app and
+  the command line alike.
+
 ## 0.2.0 - 2026-11-03
 
 Share one vault between your machines. **Update both programs**: this
