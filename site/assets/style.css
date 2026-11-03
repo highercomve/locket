@@ -603,3 +603,7 @@ code {
 .net-figure { margin: 0; padding: 18px; }
 .net-figure img { display: block; width: 100%; height: auto; }
 @media (max-width: 960px) { .net-block { grid-template-columns: 1fr; } }
+
+/* Locket: code cards right after a route (the CLI examples under "how it
+   works") get the same breathing room as the network block on NomadFS. */
+.route + .code-pair { margin-top: 56px; }
