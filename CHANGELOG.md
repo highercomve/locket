@@ -4,7 +4,14 @@ All notable changes to Locket. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0 - 2026-11-03
+
+Share one vault between your machines. **Update both programs**: this
+version stores the vault in a new format (3) that Locket 0.1.0 can't read,
+and 0.1.0 reports that as "the vault can't be decrypted". From 0.2.0 on,
+the app's update also updates the `locket` next to it, and `locket update`
+also updates the `locket-app` next to it. The NomadFS backend needs
+NomadFS 0.6.0 or later, which adds the local API it uses.
 
 ### Added
 
@@ -15,7 +22,6 @@ uses [Semantic Versioning](https://semver.org/).
   against `SHA256SUMS`: `scripts/install.sh` for Linux and macOS
   (`curl -fsSL …/install.sh | sh`) and `scripts/install.ps1` for Windows
   (`irm …/install.ps1 | iex`).
-
 - **Sharing between machines.** `locket sync setup|join|now|status|stop|backends`,
   and a **Settings** page in the desktop app (sync, updates, about). Each
   machine keeps its full vault. Syncs merge every machine's edits, with
@@ -64,6 +70,10 @@ uses [Semantic Versioning](https://semver.org/).
   follows links.
 - The sync engine zeroes the memory it decrypts into; passphrases are
   typed without echo (Windows too) and wiped after use.
+- Conflict copies that the shared key can't open are skipped and never
+  removed, and they can't crowd out real ones. A NomadFS answer cut short
+  is refused, a stalled NomadFS times out after 60 seconds, and its
+  `api.json` is only trusted when it's a plain file only you can read.
 
 ## 0.1.0 - 2026-11-03
 
