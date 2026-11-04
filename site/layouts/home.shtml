@@ -65,7 +65,7 @@
 				<article class="feature plate">
 					<div class="feature-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v6c0 4.4 3 7.6 7 9 4-1.4 7-4.6 7-9V6l-7-3z"/><path d="m9 12 2 2 4-4"/></svg></div>
 					<h3>Local, and on every machine</h3>
-					<p>No server and no account. Share one vault between your machines through <a href="https://github.com/highercomve/nomadfs">NomadFS</a>'s swarm or any synced folder: each machine keeps a full copy, works offline, and the newest edit wins. The shared files only open with your passphrase. MIT licensed.</p>
+					<p>No server and no account. Share one vault between your machines through <a href="#sync">NomadFS</a>'s swarm or any synced folder: each machine keeps a full copy, works offline, and the newest edit wins. The shared files only open with your passphrase. MIT licensed.</p>
 				</article>
 			</div>
 		</section>
@@ -194,9 +194,71 @@ the command's environment:
 			</div>
 		</section>
 
+		<section class="section" id="sync">
+			<div class="section-head">
+				<p class="plate-label">05 · on every machine</p>
+				<h2>One vault, kept in step by NomadFS</h2>
+				<p><a href="https://nomadfs.foreachdeveloper.com">NomadFS</a> links your devices into a swarm with one folder they all read and write. Locket keeps its shared vault there, through the running node's local API: no mount, no server and no account.</p>
+			</div>
+			<ol class="route">
+				<li>
+					<span class="stop">01</span>
+					<div>
+						<h3>Run NomadFS on each machine</h3>
+						<p>Install <a href="https://nomadfs.foreachdeveloper.com/#download">NomadFS</a> 0.6.0 or later and join your machines into one swarm with a one-time invite. Keep the node running: the app, or <code>nomadfs</code> as a service. It publishes its local API in <code>~/.nomadfs</code>, for your user only.</p>
+					</div>
+				</li>
+				<li>
+					<span class="stop">02</span>
+					<div>
+						<h3>Share the vault from one machine</h3>
+						<p><code>locket sync setup nomadfs</code> asks for a new passphrase and puts the vault in the swarm folder's <code>locket/</code>: <code>key.json</code>, the key wrapped with your passphrase (Argon2id), and <code>vault.enc</code>, sealed like the local one.</p>
+					</div>
+				</li>
+				<li>
+					<span class="stop">03</span>
+					<div>
+						<h3>Join from the others</h3>
+						<p><code>locket sync join nomadfs</code> asks for that passphrase once. From then on the machine keeps the shared key as its own and never asks again. In the app it's <strong>Settings</strong>: pick NomadFS, type the passphrase, <strong>Connect</strong>.</p>
+					</div>
+				</li>
+				<li>
+					<span class="stop">04</span>
+					<div>
+						<h3>Edit anywhere, offline too</h3>
+						<p>Every command syncs before and after it runs, and the window every 30 seconds and after each edit. Each machine keeps a full vault; the newest edit wins, deletions travel, and two writes at once are merged on the next sync.</p>
+					</div>
+				</li>
+			</ol>
+			<div class="code-pair">
+				<figure class="code-card plate">
+					<figcaption><span class="dot"></span>share it, then join it</figcaption>
+<pre><code><span class="tk-com"># the first machine (asks for a new passphrase, twice)</span>
+locket sync setup <span class="tk-str">nomadfs</span>
+
+<span class="tk-com"># every other machine (asks for that passphrase)</span>
+locket sync join <span class="tk-str">nomadfs</span>
+
+locket sync status   <span class="tk-com"># through what, and the last sync</span>
+locket sync now      <span class="tk-com"># sync right away</span>
+locket sync stop     <span class="tk-com"># stop; this machine's vault stays</span></code></pre>
+				</figure>
+				<article class="plate phone-notes">
+					<p class="plate-label">what NomadFS gives the vault</p>
+					<h3>Safe writes, not just a synced folder</h3>
+					<ul>
+						<li><strong>Versioned writes:</strong> Locket writes only over the version it read. A machine that missed an edit gets a 412 and merges first, instead of overwriting it.</li>
+						<li><strong>No empty overwrites:</strong> a node refuses writes until it has synced with its peers once, so a laptop that just woke up never replaces the swarm's vault with nothing.</li>
+						<li><strong>Only ciphertext travels:</strong> NomadFS encrypts between devices, and what it carries is already sealed. Without the passphrase neither file opens.</li>
+					</ul>
+				</article>
+			</div>
+			<p class="note">No NomadFS? The <code>folder</code> backend uses any folder another tool keeps in step: Syncthing, Dropbox, a network share, or NomadFS's mount. Anyone with the passphrase can read and edit the vault, so only give it to machines you trust.</p>
+		</section>
+
 		<section class="section" id="safety">
 			<div class="section-head">
-				<p class="plate-label">05 · safety</p>
+				<p class="plate-label">06 · safety</p>
 				<h2>What the seal protects</h2>
 				<p>Locket is careful about the few things a local vault has to get right.</p>
 			</div>
@@ -234,7 +296,7 @@ the command's environment:
 
 		<section class="section" id="download" data-release-json="$site.asset('release.json').link()">
 			<div class="section-head">
-				<p class="plate-label">06 · download</p>
+				<p class="plate-label">07 · download</p>
 				<h2>Locket for Linux, macOS and Windows</h2>
 				<p>The desktop app and the command line, from the latest release. Both update themselves: <code>locket update</code>, or the app's <strong>Update</strong> button, after checking the release's signature. Free and open source.</p>
 				<p class="release-badge" data-release-version role="status">Finding the latest release…</p>
@@ -271,7 +333,7 @@ the command's environment:
 
 		<section class="section" id="install">
 			<div class="section-head">
-				<p class="plate-label">07 · from source</p>
+				<p class="plate-label">08 · from source</p>
 				<h2>Build it with <a href="https://ziglang.org/">Zig</a> &amp; <a href="https://oriel.foreachdeveloper.com">Oriel</a></h2>
 				<p>You need <a href="https://ziglang.org/download/">Zig 0.16</a> and, for the desktop app on Linux, the GTK 4 development files (<code>gtk4</code> on Arch, <code>libgtk-4-dev</code> on Debian and Ubuntu, <code>gtk4-devel</code> on Fedora).</p>
 			</div>
@@ -296,7 +358,7 @@ zig build test                      <span class="tk-com"># the unit tests</span>
 		</section>
 
 		<section class="cta plate">
-			<p class="plate-label">08 · start</p>
+			<p class="plate-label">09 · start</p>
 			<h2>One vault, one command</h2>
 			<p>Install Locket, store your first workspace, and run your agent through it.</p>
 			<div class="hero-actions">
