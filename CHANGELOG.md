@@ -4,6 +4,12 @@ All notable changes to Locket. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
+## 0.2.2 - 2026-11-09
+
+### Added
+
+- **Flatpak bundles for Linux (`x86_64` and `aarch64`)**: `locket-app-<version>-x86_64.flatpak` and `locket-app-<version>-aarch64.flatpak` are now built and attached to releases alongside the AppImage, `.deb` and `.rpm` packages.
+
 ## 0.2.1 - 2026-11-03
 
 Fixes for joining a shared vault from the desktop app.

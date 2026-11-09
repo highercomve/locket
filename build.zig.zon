@@ -1,6 +1,6 @@
 .{
     .name = .locket,
-    .version = "0.2.1",
+    .version = "0.2.2",
     // Derived from the package name; changing it has security and trust implications.
     .fingerprint = 0xf765d8f575b311a1,
     .minimum_zig_version = "0.16.0",
@@ -10,7 +10,7 @@
         // last tags. Move to tagged releases when those include them.
         .oriel = .{
             .url = "https://github.com/highercomve/Oriel/archive/refs/tags/v0.20.14.tar.gz",
-            .hash = "oriel-0.20.14-K1NO5dTY_wBpGbvv3ml1527KVATGMP3kAR4dtdJyd2c4",
+            .hash = "oriel-0.20.14-K1NO5enY_wCX0cqDwVNc_W0QHV1LUQdaDtFOQQpNUQPC",
         },
         .zigatlas = .{
             .url = "git+https://github.com/highercomve/zigatlas#af5135c45d58a7aaa4c59bb41060b94a4ca13908",
