@@ -110,8 +110,8 @@ file:
 
 | Platform | The app | The command line |
 |---|---|---|
-| Linux x86_64 | `locket-app-<version>-x86_64.AppImage` (updates itself), or the `.deb` / `.rpm` (both include `locket`) | `locket-<version>-x86_64-linux` (static) |
-| Linux aarch64 | `locket-app-<version>-aarch64.AppImage` (updates itself), or the `.deb` / `.rpm` | `locket-<version>-aarch64-linux` (static) |
+| Linux x86_64 | `locket-app-<version>-x86_64.flatpak` (Flatpak bundle), `locket-app-<version>-x86_64.AppImage` (updates itself), or the `.deb` / `.rpm` (both include `locket`) | `locket-<version>-x86_64-linux` (static) |
+| Linux aarch64 | `locket-app-<version>-aarch64.flatpak` (Flatpak bundle), `locket-app-<version>-aarch64.AppImage` (updates itself), or the `.deb` / `.rpm` | `locket-<version>-aarch64-linux` (static) |
 | macOS (Apple silicon) | `Locket-<version>-macos-arm64.dmg` | `locket-<version>-aarch64-macos`, `-x86_64-macos` |
 | Windows x86_64 | `Locket-<version>-setup.exe` (per user, no admin) | `locket-<version>-x86_64-windows.exe` |
 

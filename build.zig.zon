@@ -10,7 +10,7 @@
         // last tags. Move to tagged releases when those include them.
         .oriel = .{
             .url = "https://github.com/highercomve/Oriel/archive/refs/tags/v0.20.14.tar.gz",
-            .hash = "oriel-0.20.14-K1NO5dXY_wCniY9yJuNTH_f8_FQvd2JT4EkzeDMQuiF3",
+            .hash = "oriel-0.20.14-K1NO5dTY_wBpGbvv3ml1527KVATGMP3kAR4dtdJyd2c4",
         },
         .zigatlas = .{
             .url = "git+https://github.com/highercomve/zigatlas#af5135c45d58a7aaa4c59bb41060b94a4ca13908",

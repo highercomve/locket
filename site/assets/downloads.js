@@ -19,10 +19,12 @@
   // manifests aren't listed: the installers carry the same builds.
   function describe(name) {
     var m;
+    if (/-x86_64\.flatpak$/.test(name)) return { os: "linux", kind: "app", format: "flatpak", label: "Flatpak" };
     if (/-x86_64\.AppImage$/.test(name)) return { os: "linux", kind: "app", format: "appimage", label: "AppImage" };
     if (/_amd64\.deb$/.test(name)) return { os: "linux", kind: "app", format: "deb", label: ".deb" };
     if (/\.x86_64\.rpm$/.test(name)) return { os: "linux", kind: "app", format: "rpm", label: ".rpm" };
     // arm64 Linux: listed under the x86_64 picker, as links.
+    if (/-aarch64\.flatpak$/.test(name)) return { os: "linux", kind: "arm", format: "flatpak", label: "Flatpak" };
     if (/-aarch64\.AppImage$/.test(name)) return { os: "linux", kind: "arm", format: "appimage", label: "AppImage" };
     if (/_arm64\.deb$/.test(name)) return { os: "linux", kind: "arm", format: "deb", label: ".deb" };
     if (/\.aarch64\.rpm$/.test(name)) return { os: "linux", kind: "arm", format: "rpm", label: ".rpm" };
@@ -128,7 +130,7 @@
         type.bytes = asset.size;
         files[type.os][type.kind].push(type);
       });
-      var order = { appimage: 0, deb: 1, rpm: 2 };
+      var order = { flatpak: 0, appimage: 1, deb: 2, rpm: 3 };
       files.linux.app.sort(function (a, b) { return order[a.format] - order[b.format]; });
       files.linux.arm.sort(function (a, b) { return order[a.format] - order[b.format]; });
       files.linux.cli.sort(function (a, b) { return a.label.localeCompare(b.label) * -1; });

@@ -304,7 +304,7 @@ locket sync stop     <span class="tk-com"># stop; this machine's vault stays</sp
 			<div class="download-grid download-grid-3">
 				<article class="download-card plate" data-download-os="linux">
 					<div class="download-card-head"><h3>Linux</h3><span class="plate-label">x86_64 · arm64</span></div>
-					<p>The AppImage updates itself; the .deb and .rpm also install <code>locket</code> and update with your package manager.</p>
+					<p>The Flatpak and AppImage packages run anywhere; the .deb and .rpm also install <code>locket</code> and update with your package manager.</p>
 					<div class="download-assets" data-assets><span class="asset-loading">Loading…</span></div>
 				</article>
 				<article class="download-card plate" data-download-os="macos">
