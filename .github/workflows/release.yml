@@ -56,7 +56,7 @@ jobs:
     steps:
       - name: System packages
         run: |
-          pacman -Syu --noconfirm --needed git pkgconf gtk4 wayland wayland-protocols libxkbcommon squashfs-tools file which
+          pacman -Syu --noconfirm --needed git pkgconf gtk4 wayland wayland-protocols libxkbcommon squashfs-tools file which flatpak
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin nfpm
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -74,10 +74,11 @@ jobs:
           done
       - name: Smoke test
         run: bash scripts/smoke.sh dist/locket-$V-x86_64-linux
-      - name: App (AppImage, deb, rpm)
+      - name: App (AppImage, deb, rpm, Flatpak)
         run: |
           zig build package -Doptimize=ReleaseSafe
-          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm dist/
+          zig build package-flatpak -Doptimize=ReleaseSafe
+          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm zig-out/package/*.flatpak dist/
           ls -l dist
       - uses: actions/upload-artifact@v4
         with:
@@ -100,7 +101,7 @@ jobs:
     steps:
       - name: System packages
         run: |
-          dnf install -y --setopt=install_weak_deps=False git pkgconf-pkg-config gtk4-devel wayland-devel wayland-protocols-devel libxkbcommon-devel squashfs-tools file which tar gzip xz desktop-file-utils glibc-common
+          dnf install -y --setopt=install_weak_deps=False git pkgconf-pkg-config gtk4-devel wayland-devel wayland-protocols-devel libxkbcommon-devel squashfs-tools file which tar gzip xz desktop-file-utils glibc-common flatpak
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_arm64.tar.gz" | tar xz -C /usr/local/bin nfpm
       - uses: actions/checkout@v4
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -125,7 +126,8 @@ jobs:
             [ -e "$d/libc.so.6" ] || ln -s /usr/lib64/libc.so.6 "$d/libc.so.6"
           done
           zig build package -Doptimize=ReleaseSafe
-          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm dist/
+          zig build package-flatpak -Doptimize=ReleaseSafe
+          cp zig-out/package/*.AppImage zig-out/package/*.deb zig-out/package/*.rpm zig-out/package/*.flatpak dist/
           ls -l dist
       - uses: actions/upload-artifact@v4
         with:

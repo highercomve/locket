@@ -92,6 +92,11 @@ pub fn build(b: *std.Build) void {
             // The CLI ships inside every package: /usr/bin/locket from the
             // deb and rpm, next to the app on Windows and in the .app.
             .contents = .{ .executables = &.{cli} },
+            .flatpak = .{
+                .extra_finish_args = &.{
+                    "--filesystem=xdg-data/locket",
+                },
+            },
         },
     });
 

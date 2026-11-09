@@ -9,8 +9,8 @@
         // driven from Zig) and zigatlas's build step are newer than their
         // last tags. Move to tagged releases when those include them.
         .oriel = .{
-            .url = "git+https://github.com/highercomve/Oriel#4f6f66bf0d48057cc3c9deb639d984ec3596e0bb",
-            .hash = "oriel-0.20.11-K1NO5Xdp_gAF95uPNyoF2L7S1_U14s-PBt9x8zth6DcH",
+            .url = "https://github.com/highercomve/Oriel/archive/refs/tags/v0.20.14.tar.gz",
+            .hash = "oriel-0.20.14-K1NO5dXY_wCniY9yJuNTH_f8_FQvd2JT4EkzeDMQuiF3",
         },
         .zigatlas = .{
             .url = "git+https://github.com/highercomve/zigatlas#af5135c45d58a7aaa4c59bb41060b94a4ca13908",
